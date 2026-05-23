@@ -1,0 +1,32 @@
+[project]
+name = "event-ledger"
+version = "0.1.0"
+description = "Two-service Event Ledger take-home implementation."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116,<1.0",
+    "httpx>=0.28,<1.0",
+    "uvicorn[standard]>=0.35,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4,<9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [
+    "services/account-service/src",
+    "services/event-gateway/src",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = [
+    "services/account-service/src",
+    "services/event-gateway/src",
+]
