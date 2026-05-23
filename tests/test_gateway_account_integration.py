@@ -26,8 +26,14 @@ def event_payload(
     }
 
 
-def account_service_transport(account_client: TestClient) -> httpx.MockTransport:
+def account_service_transport(
+    account_client: TestClient,
+    observed_trace_ids: list[str] | None = None,
+) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
+        if observed_trace_ids is not None:
+            observed_trace_ids.append(request.headers.get("X-Trace-Id"))
+
         path = request.url.path
         if request.url.query:
             path = f"{path}?{request.url.query.decode('utf-8')}"
@@ -62,9 +68,10 @@ def test_gateway_submit_event_applies_transaction_to_account_service(tmp_path):
     )
 
     account_app = create_account_app(account_settings)
+    observed_trace_ids = []
     with TestClient(account_app) as account_client:
         account_http_client = httpx.Client(
-            transport=account_service_transport(account_client)
+            transport=account_service_transport(account_client, observed_trace_ids)
         )
         account_applier = HttpAccountApplier(
             gateway_settings,
@@ -73,7 +80,11 @@ def test_gateway_submit_event_applies_transaction_to_account_service(tmp_path):
         gateway_app = create_gateway_app(gateway_settings, account_applier)
 
         with TestClient(gateway_app) as gateway_client:
-            first_response = gateway_client.post("/events", json=event_payload())
+            first_response = gateway_client.post(
+                "/events",
+                json=event_payload(),
+                headers={"X-Trace-Id": "trace-integration-123"},
+            )
             duplicate_response = gateway_client.post(
                 "/events",
                 json=event_payload(event_type="DEBIT", amount=999.00),
@@ -82,6 +93,7 @@ def test_gateway_submit_event_applies_transaction_to_account_service(tmp_path):
             account_response = account_client.get("/accounts/acct-123")
 
     assert first_response.status_code == 201
+    assert first_response.headers["X-Trace-Id"] == "trace-integration-123"
     assert duplicate_response.status_code == 200
     assert duplicate_response.json() == first_response.json()
     assert balance_response.status_code == 200
@@ -92,3 +104,4 @@ def test_gateway_submit_event_applies_transaction_to_account_service(tmp_path):
     }
     assert account_response.status_code == 200
     assert account_response.json()["transactionCount"] == 1
+    assert observed_trace_ids == ["trace-integration-123"]

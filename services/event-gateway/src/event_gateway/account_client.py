@@ -22,12 +22,12 @@ class AccountApplicationError(Exception):
 
 
 class AccountApplier(Protocol):
-    def apply_event(self, event: EventRequest) -> None:
+    def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
         pass
 
 
 class NoopAccountApplier:
-    def apply_event(self, event: EventRequest) -> None:
+    def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
         return None
 
 
@@ -66,10 +66,11 @@ class HttpAccountApplier:
         self.client = client or httpx.Client(timeout=self.timeout_seconds)
         self.sleep = sleep or time.sleep
 
-    def apply_event(self, event: EventRequest) -> None:
+    def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
         account_id = quote(event.account_id, safe="")
         url = f"{self.base_url}/accounts/{account_id}/transactions"
         payload = account_transaction_payload(event)
+        headers = {"X-Trace-Id": trace_id} if trace_id else None
 
         last_error: httpx.RequestError | None = None
         last_response: httpx.Response | None = None
@@ -79,6 +80,7 @@ class HttpAccountApplier:
                 response = self.client.post(
                     url,
                     json=payload,
+                    headers=headers,
                     timeout=self.timeout_seconds,
                 )
             except httpx.RequestError as exc:

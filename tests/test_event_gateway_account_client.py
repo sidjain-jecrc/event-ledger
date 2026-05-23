@@ -42,16 +42,18 @@ def test_http_account_applier_posts_gateway_event_to_account_service_contract():
     def handler(request: httpx.Request) -> httpx.Response:
         observed["method"] = request.method
         observed["path"] = request.url.path
+        observed["trace_id"] = request.headers.get("X-Trace-Id")
         observed["body"] = request.read()
         return httpx.Response(201, json={"status": "ok"}, request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     applier = HttpAccountApplier(gateway_settings(), client=client)
 
-    applier.apply_event(event_request())
+    applier.apply_event(event_request(), trace_id="trace-client-123")
 
     assert observed["method"] == "POST"
     assert observed["path"] == "/accounts/acct-123/transactions"
+    assert observed["trace_id"] == "trace-client-123"
     assert observed["body"] == (
         b'{"eventId":"evt-001","type":"CREDIT","amount":150,'
         b'"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z",'

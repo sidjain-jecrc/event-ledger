@@ -1,4 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query, Response, status
+from datetime import UTC, datetime
+import json
+import logging
+import time
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 
 from event_gateway.account_client import (
     AccountApplicationError,
@@ -8,6 +14,31 @@ from event_gateway.account_client import (
 from event_gateway.config import Settings, get_settings
 from event_gateway.schemas import EventRequest
 from event_gateway.storage import EventAlreadyExistsError, EventRepository
+
+
+TRACE_HEADER = "X-Trace-Id"
+
+logger = logging.getLogger("event_gateway")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+def log_event(
+    *,
+    level: str,
+    service: str,
+    trace_id: str,
+    message: str,
+    **fields: object,
+) -> None:
+    payload = {
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "level": level,
+        "service": service,
+        "traceId": trace_id,
+        "message": message,
+        **fields,
+    }
+    logger.log(logging.getLevelName(level), json.dumps(payload, sort_keys=True))
 
 
 def create_app(
@@ -24,6 +55,29 @@ def create_app(
     app.state.repository = repository
     app.state.account_applier = account_applier
 
+    @app.middleware("http")
+    async def trace_and_log_request(request: Request, call_next):
+        trace_id = request.headers.get(TRACE_HEADER) or str(uuid4())
+        request.state.trace_id = trace_id
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+
+        response.headers[TRACE_HEADER] = trace_id
+        log_event(
+            level="INFO",
+            service=settings.service_name,
+            trace_id=trace_id,
+            message="request completed",
+            method=request.method,
+            path=route_path,
+            statusCode=response.status_code,
+            durationMs=duration_ms,
+        )
+        return response
+
     @app.get("/health")
     def health() -> dict[str, object]:
         database_status = "ok" if repository.check_connectivity() else "unavailable"
@@ -37,14 +91,18 @@ def create_app(
         }
 
     @app.post("/events", status_code=status.HTTP_201_CREATED)
-    def submit_event(event: EventRequest, response: Response) -> dict[str, object]:
+    def submit_event(
+        event: EventRequest,
+        request: Request,
+        response: Response,
+    ) -> dict[str, object]:
         existing_event = repository.get_event(event.event_id)
         if existing_event is not None:
             response.status_code = status.HTTP_200_OK
             return existing_event
 
         try:
-            account_applier.apply_event(event)
+            account_applier.apply_event(event, request.state.trace_id)
             record = repository.create_event(event)
         except AccountApplicationError as exc:
             raise HTTPException(

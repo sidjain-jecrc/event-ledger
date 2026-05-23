@@ -38,6 +38,13 @@ ambiguity in favor of the handout.
   endpoints keep serving local data during Account Service outage, failed new
   submissions are not stored, tests cover retry/degradation behavior, manual
   outage verification passed, and README documentation explains configuration.
+- **Phase 5 complete**: Gateway accepts or generates `X-Trace-Id` for every
+  request, returns the trace ID in responses, propagates it to Account Service
+  on transaction application calls, emits JSON request logs with trace ID and
+  request metadata, tests verify generated/accepted trace IDs, downstream
+  propagation, and structured logs, manual two-service verification confirmed
+  matching trace IDs in both service logs, and README documentation explains the
+  tracing contract.
 
 ## Architecture Summary
 
@@ -212,6 +219,8 @@ The implementation is complete when:
   responses. It does not retry Account Service `4xx` responses such as
   `409 Conflict`.
 - Default trace header: `X-Trace-Id`.
+- Gateway returns `X-Trace-Id` on every response. Account Service also returns
+  the trace ID it received or generated for direct internal requests.
 - Default custom metrics: request count by endpoint/status and Account Service
   call failures/latency.
 - Account Service rejects mixed currencies for an existing account with

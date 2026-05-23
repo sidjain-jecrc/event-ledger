@@ -1,7 +1,10 @@
+import json
+from uuid import UUID
+
 import pytest
 from fastapi.testclient import TestClient
 
-from event_gateway.account_client import AccountApplicationError
+from event_gateway.account_client import AccountApplicationError, NoopAccountApplier
 from event_gateway.config import Settings
 from event_gateway.main import create_app
 
@@ -9,13 +12,15 @@ from event_gateway.main import create_app
 class RecordingAccountApplier:
     def __init__(self) -> None:
         self.events = []
+        self.trace_ids = []
 
-    def apply_event(self, event) -> None:
+    def apply_event(self, event, trace_id=None) -> None:
         self.events.append(event)
+        self.trace_ids.append(trace_id)
 
 
 class FailingAccountApplier:
-    def apply_event(self, event) -> None:
+    def apply_event(self, event, trace_id=None) -> None:
         raise AccountApplicationError("Account Service is unavailable")
 
 
@@ -23,7 +28,7 @@ class ToggleAccountApplier:
     def __init__(self) -> None:
         self.available = True
 
-    def apply_event(self, event) -> None:
+    def apply_event(self, event, trace_id=None) -> None:
         if not self.available:
             raise AccountApplicationError("Account Service is unavailable")
 
@@ -70,7 +75,11 @@ def event_payload(
 
 
 def test_submits_event_and_stores_it_locally(client, applier):
-    response = client.post("/events", json=event_payload())
+    response = client.post(
+        "/events",
+        json=event_payload(),
+        headers={"X-Trace-Id": "trace-gateway-submit"},
+    )
 
     assert response.status_code == 201
     assert response.json() == {
@@ -86,6 +95,8 @@ def test_submits_event_and_stores_it_locally(client, applier):
         "status": "ACCEPTED",
     }
     assert [event.event_id for event in applier.events] == ["evt-001"]
+    assert applier.trace_ids == ["trace-gateway-submit"]
+    assert response.headers["X-Trace-Id"] == "trace-gateway-submit"
 
     read_response = client.get("/events/evt-001")
 
@@ -210,6 +221,36 @@ def test_existing_event_reads_still_work_when_account_application_fails(gateway_
     assert [event["eventId"] for event in list_response.json()["events"]] == [
         "evt-001"
     ]
+
+
+def test_gateway_generates_trace_id_when_request_has_none(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert UUID(response.headers["X-Trace-Id"])
+
+
+def test_gateway_accepts_trace_id_and_logs_structured_json(gateway_settings, caplog):
+    caplog.set_level("INFO", logger="event_gateway")
+    client = TestClient(create_app(gateway_settings, account_applier=NoopAccountApplier()))
+
+    response = client.get("/health", headers={"X-Trace-Id": "trace-log-123"})
+
+    gateway_logs = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "event_gateway"
+    ]
+
+    assert response.status_code == 200
+    assert response.headers["X-Trace-Id"] == "trace-log-123"
+    assert gateway_logs[-1]["service"] == "event-gateway"
+    assert gateway_logs[-1]["traceId"] == "trace-log-123"
+    assert gateway_logs[-1]["level"] == "INFO"
+    assert gateway_logs[-1]["message"] == "request completed"
+    assert gateway_logs[-1]["method"] == "GET"
+    assert gateway_logs[-1]["path"] == "/health"
+    assert gateway_logs[-1]["statusCode"] == 200
 
 
 def test_gateway_health_reports_database_and_account_service_url(gateway_settings):

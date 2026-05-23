@@ -16,7 +16,7 @@ databases. They communicate through synchronous REST.
 
 ## Current Phase
 
-Phase 4 is Gateway resiliency and graceful degradation:
+Phase 5 is distributed tracing and structured Gateway logging:
 
 - Python + FastAPI service skeletons
 - dependency and test configuration
@@ -39,6 +39,9 @@ Phase 4 is Gateway resiliency and graceful degradation:
 - Gateway returns `503 Service Unavailable` when Account Service cannot be
   reached
 - Gateway local event reads continue to work while Account Service is down
+- Gateway accepts or generates `X-Trace-Id` for every request
+- Gateway propagates `X-Trace-Id` to Account Service
+- Gateway and Account Service both emit JSON request logs with the trace ID
 
 ## Local Setup
 
@@ -171,7 +174,35 @@ The Gateway Account Service client is configured with environment variables:
 Backoff doubles between attempts. For example, with the default backoff and
 three total attempts, retries wait about `0.1s` and then `0.2s`.
 
-## Phase 4 Verification
+## Tracing And Logs
+
+Both services use `X-Trace-Id` as the trace header.
+
+- If a client sends `X-Trace-Id` to Gateway, Gateway returns the same value in
+  its response and propagates it to Account Service.
+- If a client omits `X-Trace-Id`, Gateway generates one and returns it in the
+  response.
+- Gateway and Account Service emit JSON request logs with `timestamp`, `level`,
+  `service`, `traceId`, `message`, `method`, `path`, `statusCode`, and
+  `durationMs`.
+
+Example log:
+
+```json
+{
+  "durationMs": 25.82,
+  "level": "INFO",
+  "message": "request completed",
+  "method": "POST",
+  "path": "/events",
+  "service": "event-gateway",
+  "statusCode": 201,
+  "timestamp": "2026-05-23T23:03:43.698452Z",
+  "traceId": "manual-phase5-trace"
+}
+```
+
+## Phase 5 Verification
 
 Automated verification:
 
@@ -192,20 +223,23 @@ curl http://127.0.0.1:8001/accounts/acct-123/balance
 curl http://127.0.0.1:8001/metrics
 ```
 
-Gateway-to-Account manual verification and degradation example:
+Gateway-to-Account manual verification, tracing, and degradation example:
 
 ```bash
 uvicorn account_service.main:app --app-dir services/account-service/src --port 8001
 ACCOUNT_SERVICE_URL=http://127.0.0.1:8001 \
   uvicorn event_gateway.main:app --app-dir services/event-gateway/src --port 8000
 
-curl http://127.0.0.1:8000/health
+curl -H "X-Trace-Id: manual-phase5-trace" http://127.0.0.1:8000/health
 curl -X POST http://127.0.0.1:8000/events \
   -H "Content-Type: application/json" \
+  -H "X-Trace-Id: manual-phase5-trace" \
   -d '{"eventId":"evt-001","accountId":"acct-123","type":"CREDIT","amount":150.00,"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z","metadata":{"source":"manual"}}'
 curl http://127.0.0.1:8000/events/evt-001
 curl "http://127.0.0.1:8000/events?account=acct-123"
 curl http://127.0.0.1:8001/accounts/acct-123/balance
+
+# Confirm both service logs include the same traceId.
 
 # Stop Account Service, then verify Gateway degrades cleanly.
 curl http://127.0.0.1:8000/events/evt-001
