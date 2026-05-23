@@ -19,6 +19,15 @@ class FailingAccountApplier:
         raise AccountApplicationError("Account Service is unavailable")
 
 
+class ToggleAccountApplier:
+    def __init__(self) -> None:
+        self.available = True
+
+    def apply_event(self, event) -> None:
+        if not self.available:
+            raise AccountApplicationError("Account Service is unavailable")
+
+
 @pytest.fixture
 def gateway_settings(tmp_path):
     return Settings(
@@ -178,6 +187,29 @@ def test_does_not_store_event_when_account_application_fails(gateway_settings):
     assert response.status_code == 503
     assert response.json()["detail"] == "Account Service is unavailable"
     assert read_response.status_code == 404
+
+
+def test_existing_event_reads_still_work_when_account_application_fails(gateway_settings):
+    applier = ToggleAccountApplier()
+    client = TestClient(create_app(gateway_settings, account_applier=applier))
+
+    accepted_response = client.post("/events", json=event_payload())
+    applier.available = False
+    failed_response = client.post(
+        "/events",
+        json=event_payload(event_id="evt-002"),
+    )
+    read_response = client.get("/events/evt-001")
+    list_response = client.get("/events", params={"account": "acct-123"})
+
+    assert accepted_response.status_code == 201
+    assert failed_response.status_code == 503
+    assert read_response.status_code == 200
+    assert read_response.json() == accepted_response.json()
+    assert list_response.status_code == 200
+    assert [event["eventId"] for event in list_response.json()["events"]] == [
+        "evt-001"
+    ]
 
 
 def test_gateway_health_reports_database_and_account_service_url(gateway_settings):

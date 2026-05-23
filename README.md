@@ -16,7 +16,7 @@ databases. They communicate through synchronous REST.
 
 ## Current Phase
 
-Phase 3 is the Gateway-to-Account integration:
+Phase 4 is Gateway resiliency and graceful degradation:
 
 - Python + FastAPI service skeletons
 - dependency and test configuration
@@ -34,6 +34,11 @@ Phase 3 is the Gateway-to-Account integration:
 - Event Gateway real synchronous REST call to Account Service
 - Gateway persists accepted events only after Account Service successfully
   applies the transaction
+- Gateway Account Service calls use bounded timeout + retry with exponential
+  backoff
+- Gateway returns `503 Service Unavailable` when Account Service cannot be
+  reached
+- Gateway local event reads continue to work while Account Service is down
 
 ## Local Setup
 
@@ -110,14 +115,19 @@ Returns in-memory request counts by method, route, and status code.
 
 The Gateway applies new events by calling Account Service synchronously over
 REST. The Gateway stores an event locally only after Account Service accepts the
-transaction.
+transaction. Calls to Account Service use a bounded retry policy with
+exponential backoff for transient request errors, timeouts, `408`, `429`, and
+`5xx` responses. Gateway does not retry non-transient Account Service `4xx`
+responses.
 
 ### `POST /events`
 
 Validates and accepts a transaction event into Gateway local storage. New events
 return `201 Created` after Account Service applies the transaction. Duplicate
 `eventId` submissions return the original stored event with `200 OK` and do not
-call Account Service again.
+call Account Service again. If Account Service is unavailable after the retry
+policy is exhausted, the Gateway returns `503 Service Unavailable` and does not
+store the new event.
 
 ```json
 {
@@ -150,7 +160,18 @@ chronologically by `eventTimestamp`.
 Returns Gateway service status, SQLite connectivity diagnostics, and configured
 Account Service URL.
 
-## Phase 3 Verification
+## Resiliency Configuration
+
+The Gateway Account Service client is configured with environment variables:
+
+- `ACCOUNT_SERVICE_TIMEOUT_SECONDS`: per-attempt timeout, default `2.0`.
+- `ACCOUNT_SERVICE_RETRY_ATTEMPTS`: total attempts, default `3`.
+- `ACCOUNT_SERVICE_RETRY_BACKOFF_SECONDS`: initial retry backoff, default `0.1`.
+
+Backoff doubles between attempts. For example, with the default backoff and
+three total attempts, retries wait about `0.1s` and then `0.2s`.
+
+## Phase 4 Verification
 
 Automated verification:
 
@@ -171,7 +192,7 @@ curl http://127.0.0.1:8001/accounts/acct-123/balance
 curl http://127.0.0.1:8001/metrics
 ```
 
-Gateway-to-Account manual verification example:
+Gateway-to-Account manual verification and degradation example:
 
 ```bash
 uvicorn account_service.main:app --app-dir services/account-service/src --port 8001
@@ -185,6 +206,13 @@ curl -X POST http://127.0.0.1:8000/events \
 curl http://127.0.0.1:8000/events/evt-001
 curl "http://127.0.0.1:8000/events?account=acct-123"
 curl http://127.0.0.1:8001/accounts/acct-123/balance
+
+# Stop Account Service, then verify Gateway degrades cleanly.
+curl http://127.0.0.1:8000/events/evt-001
+curl "http://127.0.0.1:8000/events?account=acct-123"
+curl -X POST http://127.0.0.1:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"eventId":"evt-002","accountId":"acct-123","type":"CREDIT","amount":25.00,"currency":"USD","eventTimestamp":"2026-05-15T15:02:11Z","metadata":{"source":"manual-outage"}}'
 ```
 
 ## Implementation Defaults

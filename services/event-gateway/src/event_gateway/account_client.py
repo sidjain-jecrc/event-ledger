@@ -1,5 +1,7 @@
 from datetime import UTC
 from decimal import Decimal
+import time
+from collections.abc import Callable
 from typing import Protocol
 from urllib.parse import quote
 
@@ -52,35 +54,76 @@ class HttpAccountApplier:
         self,
         settings: Settings,
         client: httpx.Client | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.base_url = settings.account_service_url.rstrip("/")
         self.timeout_seconds = settings.account_service_timeout_seconds
+        self.retry_attempts = max(1, settings.account_service_retry_attempts)
+        self.retry_backoff_seconds = max(
+            0.0,
+            settings.account_service_retry_backoff_seconds,
+        )
         self.client = client or httpx.Client(timeout=self.timeout_seconds)
+        self.sleep = sleep or time.sleep
 
     def apply_event(self, event: EventRequest) -> None:
         account_id = quote(event.account_id, safe="")
         url = f"{self.base_url}/accounts/{account_id}/transactions"
         payload = account_transaction_payload(event)
 
-        try:
-            response = self.client.post(
-                url,
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
-        except httpx.RequestError as exc:
+        last_error: httpx.RequestError | None = None
+        last_response: httpx.Response | None = None
+
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                response = self.client.post(
+                    url,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt < self.retry_attempts:
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise AccountApplicationError(
+                    "Account Service is unavailable",
+                    status_code=503,
+                ) from exc
+
+            if 200 <= response.status_code < 300:
+                return
+
+            if not _should_retry_response(response):
+                raise AccountApplicationError(
+                    _error_detail(response),
+                    status_code=response.status_code,
+                )
+
+            last_response = response
+            if attempt < self.retry_attempts:
+                self._sleep_before_retry(attempt)
+                continue
+
+        if last_response is not None:
             raise AccountApplicationError(
                 "Account Service is unavailable",
                 status_code=503,
-            ) from exc
-
-        if 200 <= response.status_code < 300:
-            return
+            )
 
         raise AccountApplicationError(
-            _error_detail(response),
-            status_code=response.status_code,
-        )
+            "Account Service is unavailable",
+            status_code=503,
+        ) from last_error
+
+    def _sleep_before_retry(self, completed_attempt: int) -> None:
+        delay = self.retry_backoff_seconds * (2 ** (completed_attempt - 1))
+        if delay > 0:
+            self.sleep(delay)
+
+
+def _should_retry_response(response: httpx.Response) -> bool:
+    return response.status_code in (408, 429) or response.status_code >= 500
 
 
 def _error_detail(response: httpx.Response) -> str:

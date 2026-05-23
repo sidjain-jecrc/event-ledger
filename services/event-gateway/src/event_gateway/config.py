@@ -9,6 +9,7 @@ class Settings:
     account_service_url: str
     account_service_timeout_seconds: float
     account_service_retry_attempts: int
+    account_service_retry_backoff_seconds: float = 0.1
 
 
 def get_settings() -> Settings:
@@ -27,5 +28,8 @@ def get_settings() -> Settings:
         ),
         account_service_retry_attempts=int(
             os.getenv("ACCOUNT_SERVICE_RETRY_ATTEMPTS", "3")
+        ),
+        account_service_retry_backoff_seconds=float(
+            os.getenv("ACCOUNT_SERVICE_RETRY_BACKOFF_SECONDS", "0.1")
         ),
     )

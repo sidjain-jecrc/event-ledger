@@ -31,6 +31,13 @@ ambiguity in favor of the handout.
   Account Service again, downstream errors are mapped to Gateway HTTP errors,
   integration tests cover Gateway-to-Account balance updates, and README
   documentation includes the two-service verification flow.
+- **Phase 4 complete**: Gateway Account Service calls use bounded timeout +
+  retry with exponential backoff, retries are limited to transient request
+  errors and retryable HTTP statuses, downstream `4xx` errors are not retried,
+  exhausted retry attempts return `503 Service Unavailable`, Gateway read
+  endpoints keep serving local data during Account Service outage, failed new
+  submissions are not stored, tests cover retry/degradation behavior, manual
+  outage verification passed, and README documentation explains configuration.
 
 ## Architecture Summary
 
@@ -200,6 +207,10 @@ The implementation is complete when:
   this.
 - Default database: SQLite per service, configured independently.
 - Default resiliency pattern: timeout + retry with exponential backoff.
+- Gateway `ACCOUNT_SERVICE_RETRY_ATTEMPTS` is total attempts, not additional
+  retries. Gateway retries request errors/timeouts, `408`, `429`, and `5xx`
+  responses. It does not retry Account Service `4xx` responses such as
+  `409 Conflict`.
 - Default trace header: `X-Trace-Id`.
 - Default custom metrics: request count by endpoint/status and Account Service
   call failures/latency.
