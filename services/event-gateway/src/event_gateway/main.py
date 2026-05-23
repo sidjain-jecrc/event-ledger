@@ -12,6 +12,7 @@ from event_gateway.account_client import (
     HttpAccountApplier,
 )
 from event_gateway.config import Settings, get_settings
+from event_gateway.metrics import Metrics
 from event_gateway.schemas import EventRequest
 from event_gateway.storage import EventAlreadyExistsError, EventRepository
 
@@ -48,12 +49,14 @@ def create_app(
     settings = settings or get_settings()
     repository = EventRepository(settings.database_url)
     repository.initialize()
-    account_applier = account_applier or HttpAccountApplier(settings)
+    metrics = Metrics()
+    account_applier = account_applier or HttpAccountApplier(settings, metrics=metrics)
 
     app = FastAPI(title="Event Gateway API", version="0.1.0")
     app.state.settings = settings
     app.state.repository = repository
     app.state.account_applier = account_applier
+    app.state.metrics = metrics
 
     @app.middleware("http")
     async def trace_and_log_request(request: Request, call_next):
@@ -66,6 +69,7 @@ def create_app(
         route_path = getattr(route, "path", request.url.path)
 
         response.headers[TRACE_HEADER] = trace_id
+        metrics.record_request(request.method, route_path, response.status_code)
         log_event(
             level="INFO",
             service=settings.service_name,
@@ -88,6 +92,13 @@ def create_app(
                 "database": database_status,
                 "accountServiceUrl": settings.account_service_url,
             },
+        }
+
+    @app.get("/metrics")
+    def get_metrics() -> dict[str, object]:
+        return {
+            "service": settings.service_name,
+            **metrics.snapshot(),
         }
 
     @app.post("/events", status_code=status.HTTP_201_CREATED)

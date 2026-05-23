@@ -3,6 +3,7 @@ import pytest
 
 from event_gateway.account_client import AccountApplicationError, HttpAccountApplier
 from event_gateway.config import Settings
+from event_gateway.metrics import Metrics
 from event_gateway.schemas import EventRequest
 
 
@@ -130,6 +131,39 @@ def test_http_account_applier_retries_retryable_status_codes():
     applier.apply_event(event_request())
 
     assert attempts == 2
+
+
+def test_http_account_applier_records_account_service_call_metrics():
+    attempts = 0
+    metrics = Metrics()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                503,
+                json={"detail": "warming up"},
+                request=request,
+            )
+        return httpx.Response(201, json={"status": "ok"}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    applier = HttpAccountApplier(
+        gateway_settings(retry_attempts=2),
+        client=client,
+        metrics=metrics,
+    )
+
+    applier.apply_event(event_request())
+
+    snapshot = metrics.snapshot()
+    assert snapshot["accountServiceCalls"]["outcomes"] == {
+        "503": 1,
+        "201": 1,
+    }
+    assert snapshot["accountServiceCalls"]["latencyMs"]["count"] == 2
+    assert snapshot["accountServiceCalls"]["latencyMs"]["total"] >= 0
 
 
 def test_http_account_applier_returns_503_after_retryable_status_exhausted():

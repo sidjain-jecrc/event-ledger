@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 from event_gateway.config import Settings
+from event_gateway.metrics import Metrics
 from event_gateway.schemas import EventRequest
 
 
@@ -55,6 +56,7 @@ class HttpAccountApplier:
         settings: Settings,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] | None = None,
+        metrics: Metrics | None = None,
     ) -> None:
         self.base_url = settings.account_service_url.rstrip("/")
         self.timeout_seconds = settings.account_service_timeout_seconds
@@ -65,6 +67,7 @@ class HttpAccountApplier:
         )
         self.client = client or httpx.Client(timeout=self.timeout_seconds)
         self.sleep = sleep or time.sleep
+        self.metrics = metrics
 
     def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
         account_id = quote(event.account_id, safe="")
@@ -77,6 +80,7 @@ class HttpAccountApplier:
 
         for attempt in range(1, self.retry_attempts + 1):
             try:
+                start = time.perf_counter()
                 response = self.client.post(
                     url,
                     json=payload,
@@ -84,6 +88,10 @@ class HttpAccountApplier:
                     timeout=self.timeout_seconds,
                 )
             except httpx.RequestError as exc:
+                self._record_account_service_call(
+                    outcome="request_error",
+                    start=start,
+                )
                 last_error = exc
                 if attempt < self.retry_attempts:
                     self._sleep_before_retry(attempt)
@@ -92,6 +100,11 @@ class HttpAccountApplier:
                     "Account Service is unavailable",
                     status_code=503,
                 ) from exc
+
+            self._record_account_service_call(
+                outcome=str(response.status_code),
+                start=start,
+            )
 
             if 200 <= response.status_code < 300:
                 return
@@ -122,6 +135,15 @@ class HttpAccountApplier:
         delay = self.retry_backoff_seconds * (2 ** (completed_attempt - 1))
         if delay > 0:
             self.sleep(delay)
+
+    def _record_account_service_call(self, *, outcome: str, start: float) -> None:
+        if self.metrics is None:
+            return
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        self.metrics.record_account_service_call(
+            outcome=outcome,
+            latency_ms=latency_ms,
+        )
 
 
 def _should_retry_response(response: httpx.Response) -> bool:

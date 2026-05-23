@@ -16,7 +16,7 @@ databases. They communicate through synchronous REST.
 
 ## Current Phase
 
-Phase 5 is distributed tracing and structured Gateway logging:
+Phase 6 is metrics and health polish:
 
 - Python + FastAPI service skeletons
 - dependency and test configuration
@@ -42,6 +42,10 @@ Phase 5 is distributed tracing and structured Gateway logging:
 - Gateway accepts or generates `X-Trace-Id` for every request
 - Gateway propagates `X-Trace-Id` to Account Service
 - Gateway and Account Service both emit JSON request logs with the trace ID
+- Gateway exposes `/metrics` with request counts, Account Service call
+  outcomes, and Account Service call latency aggregates
+- Account Service exposes `/metrics` with request counts
+- Both services expose `/health` with SQLite connectivity diagnostics
 
 ## Local Setup
 
@@ -163,6 +167,14 @@ chronologically by `eventTimestamp`.
 Returns Gateway service status, SQLite connectivity diagnostics, and configured
 Account Service URL.
 
+### `GET /metrics`
+
+Returns in-memory Gateway metrics:
+
+- request counts by method, route, and status code
+- Account Service call outcomes by HTTP status or request error
+- Account Service call latency count, total, average, and max in milliseconds
+
 ## Resiliency Configuration
 
 The Gateway Account Service client is configured with environment variables:
@@ -202,7 +214,44 @@ Example log:
 }
 ```
 
-## Phase 5 Verification
+## Metrics
+
+Gateway metrics example:
+
+```json
+{
+  "service": "event-gateway",
+  "requests": {
+    "GET /health 200": 1,
+    "POST /events 201": 1
+  },
+  "accountServiceCalls": {
+    "outcomes": {
+      "201": 1
+    },
+    "latencyMs": {
+      "count": 1,
+      "total": 9.2,
+      "average": 9.2,
+      "max": 9.2
+    }
+  }
+}
+```
+
+Account Service metrics example:
+
+```json
+{
+  "service": "account-service",
+  "requests": {
+    "GET /health 200": 1,
+    "POST /accounts/{accountId}/transactions 201": 1
+  }
+}
+```
+
+## Phase 6 Verification
 
 Automated verification:
 
@@ -238,6 +287,8 @@ curl -X POST http://127.0.0.1:8000/events \
 curl http://127.0.0.1:8000/events/evt-001
 curl "http://127.0.0.1:8000/events?account=acct-123"
 curl http://127.0.0.1:8001/accounts/acct-123/balance
+curl http://127.0.0.1:8000/metrics
+curl http://127.0.0.1:8001/metrics
 
 # Confirm both service logs include the same traceId.
 

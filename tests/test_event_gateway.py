@@ -253,6 +253,32 @@ def test_gateway_accepts_trace_id_and_logs_structured_json(gateway_settings, cap
     assert gateway_logs[-1]["statusCode"] == 200
 
 
+def test_gateway_metrics_report_request_counts_and_account_call_metrics(client):
+    health_response = client.get("/health")
+    event_response = client.post("/events", json=event_payload())
+    metrics_response = client.get("/metrics")
+
+    assert health_response.status_code == 200
+    assert event_response.status_code == 201
+    assert metrics_response.status_code == 200
+    assert metrics_response.json() == {
+        "service": "event-gateway",
+        "requests": {
+            "GET /health 200": 1,
+            "POST /events 201": 1,
+        },
+        "accountServiceCalls": {
+            "outcomes": {},
+            "latencyMs": {
+                "count": 0,
+                "total": 0.0,
+                "average": 0.0,
+                "max": 0.0,
+            },
+        },
+    }
+
+
 def test_gateway_health_reports_database_and_account_service_url(gateway_settings):
     client = TestClient(create_app(gateway_settings))
 

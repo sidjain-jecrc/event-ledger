@@ -45,6 +45,13 @@ ambiguity in favor of the handout.
   propagation, and structured logs, manual two-service verification confirmed
   matching trace IDs in both service logs, and README documentation explains the
   tracing contract.
+- **Phase 6 complete**: Gateway exposes `/metrics` with request counts, Account
+  Service call outcomes, and Account Service call latency aggregates; Account
+  Service continues exposing request-count metrics; both health endpoints report
+  SQLite connectivity; tests cover Gateway metrics and Account Service
+  call-metric recording; manual two-service verification confirmed `/health`
+  and `/metrics` responses from both services; README documentation explains
+  the metrics shapes.
 
 ## Architecture Summary
 
@@ -223,6 +230,8 @@ The implementation is complete when:
   the trace ID it received or generated for direct internal requests.
 - Default custom metrics: request count by endpoint/status and Account Service
   call failures/latency.
+- Gateway records Account Service call outcomes per HTTP attempt using status
+  codes such as `"201"` or `"503"` and `"request_error"` for transport failures.
 - Account Service rejects mixed currencies for an existing account with
   `409 Conflict` so balances are not computed across currencies.
 - Event Gateway uses the real Gateway-to-Account REST client by default; tests
