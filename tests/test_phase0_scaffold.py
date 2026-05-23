@@ -54,7 +54,7 @@ def test_event_gateway_app_factory_exposes_health_route_and_defaults():
         "status": "ok",
         "service": "event-gateway",
         "diagnostics": {
-            "database": "not_initialized",
+            "database": "ok",
             "accountServiceUrl": "http://localhost:8001",
         },
     }

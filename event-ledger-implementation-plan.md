@@ -20,6 +20,11 @@ ambiguity in favor of the handout.
   application, `eventId` idempotency, balance/account APIs, health diagnostics,
   request metrics, trace header echoing, structured request logs, tests, and
   README documentation.
+- **Phase 2 complete**: Event Gateway SQLite event persistence, payload
+  validation, duplicate detection by `eventId`, `GET /events/{eventId}`,
+  `GET /events?account=...` ordered by event timestamp, health diagnostics,
+  account-applier seam for Phase 3 integration, tests, manual verification, and
+  README documentation.
 
 ## Architecture Summary
 
@@ -194,5 +199,7 @@ The implementation is complete when:
   call failures/latency.
 - Account Service rejects mixed currencies for an existing account with
   `409 Conflict` so balances are not computed across currencies.
+- Event Gateway uses a no-op account applier in Phase 2; Phase 3 replaces this
+  with the real Gateway-to-Account REST client.
 - This repository starts with `event-ledger-candidate-handout.md`; this document
   is the implementation planning companion.

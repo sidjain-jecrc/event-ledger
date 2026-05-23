@@ -16,7 +16,7 @@ databases. They communicate through synchronous REST.
 
 ## Current Phase
 
-Phase 1 is the Account Service core:
+Phase 2 is the Event Gateway local ledger core:
 
 - Python + FastAPI service skeletons
 - dependency and test configuration
@@ -27,6 +27,11 @@ Phase 1 is the Account Service core:
 - Account Service balance and account detail endpoints
 - Account Service health, metrics, trace header echoing, and structured request
   logs
+- Event Gateway SQLite event persistence
+- Event Gateway event validation and duplicate detection by `eventId`
+- Event Gateway event lookup and account event listing ordered by
+  `eventTimestamp`
+- Event Gateway no-op account applier seam for Phase 3 REST integration
 
 ## Local Setup
 
@@ -99,7 +104,50 @@ Returns service status and SQLite connectivity diagnostics.
 
 Returns in-memory request counts by method, route, and status code.
 
-## Phase 1 Verification
+## Event Gateway API
+
+Phase 2 implements Gateway-local behavior. The Gateway uses a no-op account
+applier for now; Phase 3 will replace this seam with the real synchronous REST
+call to Account Service.
+
+### `POST /events`
+
+Validates and accepts a transaction event into Gateway local storage. New events
+return `201 Created`. Duplicate `eventId` submissions return the original stored
+event with `200 OK` and do not re-apply the account step.
+
+```json
+{
+  "eventId": "evt-001",
+  "accountId": "acct-123",
+  "type": "CREDIT",
+  "amount": 150.00,
+  "currency": "USD",
+  "eventTimestamp": "2026-05-15T14:02:11Z",
+  "metadata": {
+    "source": "mainframe-batch"
+  }
+}
+```
+
+Accepted event responses include `status: "ACCEPTED"`.
+
+### `GET /events/{eventId}`
+
+Returns one stored Gateway event, or `404 Not Found` when the event does not
+exist.
+
+### `GET /events?account={accountId}`
+
+Returns events for the account from Gateway local storage. Results are ordered
+chronologically by `eventTimestamp`.
+
+### `GET /health`
+
+Returns Gateway service status, SQLite connectivity diagnostics, and configured
+Account Service URL.
+
+## Phase 2 Verification
 
 Automated verification:
 
@@ -118,6 +166,18 @@ curl -X POST http://127.0.0.1:8001/accounts/acct-123/transactions \
   -d '{"eventId":"evt-001","type":"CREDIT","amount":150.00,"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z","metadata":{"source":"manual"}}'
 curl http://127.0.0.1:8001/accounts/acct-123/balance
 curl http://127.0.0.1:8001/metrics
+```
+
+Gateway manual verification example:
+
+```bash
+uvicorn event_gateway.main:app --app-dir services/event-gateway/src --port 8000
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"eventId":"evt-001","accountId":"acct-123","type":"CREDIT","amount":150.00,"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z","metadata":{"source":"manual"}}'
+curl http://127.0.0.1:8000/events/evt-001
+curl "http://127.0.0.1:8000/events?account=acct-123"
 ```
 
 ## Implementation Defaults
