@@ -11,6 +11,16 @@ implementing any feature, changing behavior, or marking work complete, review
 satisfies it. If this plan and the handout appear to conflict, resolve the
 ambiguity in favor of the handout.
 
+## Phase Progress
+
+- **Phase 0 complete**: project scaffold, dependency/test configuration,
+  service app factories, placeholder Gateway health endpoint, Account Service
+  health endpoint, and smoke tests.
+- **Phase 1 complete**: Account Service SQLite persistence, transaction
+  application, `eventId` idempotency, balance/account APIs, health diagnostics,
+  request metrics, trace header echoing, structured request logs, tests, and
+  README documentation.
+
 ## Architecture Summary
 
 The system has two independently runnable services:
@@ -182,5 +192,7 @@ The implementation is complete when:
 - Default trace header: `X-Trace-Id`.
 - Default custom metrics: request count by endpoint/status and Account Service
   call failures/latency.
+- Account Service rejects mixed currencies for an existing account with
+  `409 Conflict` so balances are not computed across currencies.
 - This repository starts with `event-ledger-candidate-handout.md`; this document
   is the implementation planning companion.

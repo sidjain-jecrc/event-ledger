@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 
-from event_gateway.config import get_settings
+from event_gateway.config import Settings, get_settings
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
     app = FastAPI(title="Event Gateway API", version="0.1.0")
     app.state.settings = settings
 
