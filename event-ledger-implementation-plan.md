@@ -25,6 +25,12 @@ ambiguity in favor of the handout.
   `GET /events?account=...` ordered by event timestamp, health diagnostics,
   account-applier seam for Phase 3 integration, tests, manual verification, and
   README documentation.
+- **Phase 3 complete**: Gateway default account applier now calls Account
+  Service over synchronous REST, successful Account application is required
+  before Gateway event persistence, duplicate Gateway submissions do not call
+  Account Service again, downstream errors are mapped to Gateway HTTP errors,
+  integration tests cover Gateway-to-Account balance updates, and README
+  documentation includes the two-service verification flow.
 
 ## Architecture Summary
 
@@ -199,7 +205,7 @@ The implementation is complete when:
   call failures/latency.
 - Account Service rejects mixed currencies for an existing account with
   `409 Conflict` so balances are not computed across currencies.
-- Event Gateway uses a no-op account applier in Phase 2; Phase 3 replaces this
-  with the real Gateway-to-Account REST client.
+- Event Gateway uses the real Gateway-to-Account REST client by default; tests
+  can still inject fake account appliers for focused behavior checks.
 - This repository starts with `event-ledger-candidate-handout.md`; this document
   is the implementation planning companion.

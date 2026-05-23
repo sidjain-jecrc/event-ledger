@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Query, Response, status
 from event_gateway.account_client import (
     AccountApplicationError,
     AccountApplier,
-    NoopAccountApplier,
+    HttpAccountApplier,
 )
 from event_gateway.config import Settings, get_settings
 from event_gateway.schemas import EventRequest
@@ -17,7 +17,7 @@ def create_app(
     settings = settings or get_settings()
     repository = EventRepository(settings.database_url)
     repository.initialize()
-    account_applier = account_applier or NoopAccountApplier()
+    account_applier = account_applier or HttpAccountApplier(settings)
 
     app = FastAPI(title="Event Gateway API", version="0.1.0")
     app.state.settings = settings
@@ -48,7 +48,7 @@ def create_app(
             record = repository.create_event(event)
         except AccountApplicationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                status_code=exc.status_code,
                 detail=str(exc),
             ) from exc
         except EventAlreadyExistsError:
