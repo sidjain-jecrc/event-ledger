@@ -89,11 +89,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/metrics")
-    def get_metrics() -> dict[str, object]:
-        return {
-            "service": settings.service_name,
-            "requests": metrics.snapshot(),
-        }
+    def get_metrics() -> Response:
+        return Response(
+            content=metrics.to_prometheus(settings.service_name),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     @app.post("/accounts/{accountId}/transactions", status_code=status.HTTP_201_CREATED)
     def apply_transaction(

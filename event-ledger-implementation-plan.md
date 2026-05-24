@@ -64,6 +64,17 @@ ambiguity in favor of the handout.
   Compose. Gateway now exposes account balance/detail reads, proxies them to
   Account Service with `X-Trace-Id`, and returns a clear `503` with
   `"Account Service is unreachable"` when the internal service is down.
+- **Phase 8 complete**: Gateway Account Service retries now apply configurable
+  jitter around exponential backoff delays, with deterministic tests covering
+  both exact backoff and jittered backoff.
+- **Phase 9 complete**: both services expose Prometheus text exposition at
+  `/metrics`, including HTTP request counters and Gateway Account Service call
+  outcome/latency metrics, with tests covering metric names, labels, and
+  content type.
+- **Phase 10 complete**: Gateway applies configurable in-memory sliding-window
+  rate limiting to public application endpoints, exempts `/health` and
+  `/metrics`, returns `429 Too Many Requests` with `Retry-After`, and includes
+  tests for limit enforcement, per-client isolation, and disabling the limiter.
 
 ## Architecture Summary
 
@@ -118,11 +129,21 @@ boundary is the REST API contract between the Gateway and Account Service.
 5. **Add resiliency**
    - Use bounded timeout + retry with exponential backoff for Gateway calls to
      Account Service.
+   - Add bounded jitter to retry backoff so concurrent requests do not retry in
+     lockstep.
    - Do not retry indefinitely.
    - Return `503 Service Unavailable` when Account Service cannot be reached or
      does not respond within the configured retry policy.
 
-6. **Add delivery artifacts**
+6. **Add Gateway rate limiting**
+   - Apply an in-memory sliding-window rate limit to Gateway application
+     endpoints.
+   - Use `X-Client-Id` when present, otherwise fall back to the client host.
+   - Exempt health and metrics endpoints.
+   - Return `429 Too Many Requests` with `Retry-After` when the limit is
+     exceeded.
+
+7. **Add delivery artifacts**
    - Add `docker-compose.yml` to run both services together.
    - Add `README.md` with architecture overview, setup instructions, run
      commands, test commands, and resiliency explanation.
@@ -176,7 +197,7 @@ network, but it should not be published directly to external clients.
 ### Optional But Recommended
 
 - `GET /metrics`
-  - Expose custom metrics on one or both services.
+  - Expose Prometheus-format custom metrics on one or both services.
   - Useful metrics include request count by endpoint/status, Account Service
     call latency, and Account Service call failures.
 
@@ -195,6 +216,8 @@ network, but it should not be published directly to external clients.
   Account Service is unavailable.
 - Gateway balance/account query endpoints clearly report Account Service
   unreachability when the internal service is down.
+- Gateway rate limiting returns `429 Too Many Requests` with a `Retry-After`
+  header when a client exceeds the configured request window.
 
 ## Test Plan
 
@@ -213,11 +236,14 @@ Required coverage:
 - Balance tests verifying CREDIT transactions increase balance and DEBIT
   transactions decrease balance.
 - Resiliency tests simulating Account Service failure and timeout behavior.
+- Retry tests verifying exponential backoff with deterministic jitter.
+- Gateway rate-limit tests verifying `429`, `Retry-After`, per-client tracking,
+  and the ability to disable rate limiting.
 - Trace propagation tests verifying `X-Trace-Id` flows from Gateway to Account
   Service.
 - Integration test covering the full Gateway `POST /events` flow through Account
   Service balance update.
-- Health and metrics smoke tests.
+- Health and Prometheus metrics smoke tests.
 
 ## Acceptance Criteria
 
@@ -237,10 +263,12 @@ The implementation is complete when:
 - Trace IDs are propagated and logged by both services.
 - Structured JSON logs are emitted by both services.
 - Health endpoints exist on both services.
-- At least one custom metric is exposed or logged.
+- Prometheus-format custom metrics are exposed.
 - Gateway handles Account Service unavailability with clear `503` behavior.
 - Gateway account balance/details queries report Account Service
   unreachability clearly when Account Service is down.
+- Gateway rate limiting protects public application endpoints and returns clear
+  `429` responses when exceeded.
 - Required automated tests pass with the documented command.
 - `README.md` explains architecture, setup, startup, tests, and resiliency
   choice.
@@ -250,16 +278,19 @@ The implementation is complete when:
 - Default stack: Python + FastAPI unless a later implementation decision changes
   this.
 - Default database: SQLite per service, configured independently.
-- Default resiliency pattern: timeout + retry with exponential backoff.
+- Default resiliency pattern: timeout + retry with exponential backoff and
+  jitter.
 - Gateway `ACCOUNT_SERVICE_RETRY_ATTEMPTS` is total attempts, not additional
   retries. Gateway retries request errors/timeouts, `408`, `429`, and `5xx`
   responses. It does not retry Account Service `4xx` responses such as
   `409 Conflict`.
+- Gateway `ACCOUNT_SERVICE_RETRY_JITTER_FACTOR` defaults to `0.2`, applying a
+  bounded percentage variation around each exponential backoff delay.
 - Default trace header: `X-Trace-Id`.
 - Gateway returns `X-Trace-Id` on every response. Account Service also returns
   the trace ID it received or generated for direct internal requests.
-- Default custom metrics: request count by endpoint/status and Account Service
-  call failures/latency.
+- Default custom metrics: Prometheus request count by endpoint/status and
+  Account Service call failures/latency.
 - Gateway records Account Service call outcomes per HTTP attempt using status
   codes such as `"201"` or `"503"` and `"request_error"` for transport failures.
 - Account Service rejects mixed currencies for an existing account with
@@ -269,5 +300,8 @@ The implementation is complete when:
 - Docker Compose is the preferred run path. It maps Gateway to host port `8000`
   and keeps Account Service un-published on host port `8001`; Gateway reaches it
   internally as `http://account-service:8001`.
+- Gateway rate limiting is in-memory and per-process. That is adequate for this
+  two-service exercise; a production multi-instance deployment should use a
+  shared limiter such as Redis or enforce limits at an API gateway.
 - This repository starts with `event-ledger-candidate-handout.md`; this document
   is the implementation planning companion.

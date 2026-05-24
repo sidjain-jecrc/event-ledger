@@ -186,8 +186,11 @@ def test_health_metrics_and_trace_header(client):
     metrics_response = client.get("/metrics")
 
     assert metrics_response.status_code == 200
-    assert metrics_response.json()["service"] == "account-service"
-    assert metrics_response.json()["requests"]["GET /health 200"] == 1
+    assert metrics_response.headers["content-type"].startswith("text/plain")
+    assert (
+        'http_requests_total{service="account-service",method="GET",'
+        'path="/health",status="200"} 1'
+    ) in metrics_response.text
 
 
 def test_account_service_logs_structured_json_with_trace_id(client, caplog):

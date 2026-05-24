@@ -10,6 +10,9 @@ def test_docker_compose_defines_both_services_and_separate_databases():
     assert "account-service:" in compose
     assert "event-gateway:" in compose
     assert "ACCOUNT_SERVICE_URL: http://account-service:8001" in compose
+    assert "ACCOUNT_SERVICE_RETRY_JITTER_FACTOR" in compose
+    assert "GATEWAY_RATE_LIMIT_ENABLED" in compose
+    assert "GATEWAY_RATE_LIMIT_REQUESTS" in compose
     assert "ACCOUNT_SERVICE_DATABASE_URL: sqlite:////data/account_service.db" in compose
     assert "EVENT_GATEWAY_DATABASE_URL: sqlite:////data/event_gateway.db" in compose
     assert "8001:8001" not in compose
@@ -33,5 +36,8 @@ def test_readme_documents_docker_compose_and_final_verification():
     assert "http://127.0.0.1:8000/health" in readme
     assert "Account Service is internal" in readme
     assert "docker compose exec account-service" in readme
+    assert "Gateway Rate Limiting" in readme
+    assert "Prometheus Metrics" in readme
+    assert "ACCOUNT_SERVICE_RETRY_JITTER_FACTOR" in readme
     assert '"Account Service is unreachable"' in readme
     assert "Final Acceptance Checklist" in readme

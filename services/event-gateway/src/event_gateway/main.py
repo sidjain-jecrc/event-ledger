@@ -5,6 +5,7 @@ import time
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from event_gateway.account_client import (
     AccountApplicationError,
@@ -13,6 +14,7 @@ from event_gateway.account_client import (
 )
 from event_gateway.config import Settings, get_settings
 from event_gateway.metrics import Metrics
+from event_gateway.rate_limit import InMemoryRateLimiter
 from event_gateway.schemas import EventRequest
 from event_gateway.storage import EventAlreadyExistsError, EventRepository
 
@@ -50,6 +52,14 @@ def create_app(
     repository = EventRepository(settings.database_url)
     repository.initialize()
     metrics = Metrics()
+    rate_limiter = (
+        InMemoryRateLimiter(
+            max_requests=settings.rate_limit_requests,
+            window_seconds=settings.rate_limit_window_seconds,
+        )
+        if settings.rate_limit_enabled
+        else None
+    )
     account_applier = account_applier or HttpAccountApplier(settings, metrics=metrics)
 
     app = FastAPI(title="Event Gateway API", version="0.1.0")
@@ -57,13 +67,32 @@ def create_app(
     app.state.repository = repository
     app.state.account_applier = account_applier
     app.state.metrics = metrics
+    app.state.rate_limiter = rate_limiter
 
     @app.middleware("http")
     async def trace_and_log_request(request: Request, call_next):
         trace_id = request.headers.get(TRACE_HEADER) or str(uuid4())
         request.state.trace_id = trace_id
         start = time.perf_counter()
-        response = await call_next(request)
+
+        rate_limit_decision = None
+        if rate_limiter is not None and not _is_rate_limit_exempt(request.url.path):
+            rate_limit_key = request.headers.get("X-Client-Id") or (
+                request.client.host if request.client else "unknown"
+            )
+            rate_limit_decision = rate_limiter.check(rate_limit_key)
+
+        if rate_limit_decision is not None and not rate_limit_decision.allowed:
+            response = JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Rate limit exceeded"},
+            )
+            response.headers["Retry-After"] = str(
+                rate_limit_decision.retry_after_seconds
+            )
+        else:
+            response = await call_next(request)
+
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
         route = request.scope.get("route")
         route_path = getattr(route, "path", request.url.path)
@@ -95,11 +124,11 @@ def create_app(
         }
 
     @app.get("/metrics")
-    def get_metrics() -> dict[str, object]:
-        return {
-            "service": settings.service_name,
-            **metrics.snapshot(),
-        }
+    def get_metrics() -> Response:
+        return Response(
+            content=metrics.to_prometheus(settings.service_name),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     @app.post("/events", status_code=status.HTTP_201_CREATED)
     def submit_event(
@@ -167,6 +196,10 @@ def create_app(
             ) from exc
 
     return app
+
+
+def _is_rate_limit_exempt(path: str) -> bool:
+    return path in {"/health", "/metrics"}
 
 
 app = create_app()

@@ -74,21 +74,40 @@ pytest
 
 ## Resiliency Pattern
 
-The Gateway uses **timeout + retry with exponential backoff** for its
+The Gateway uses **timeout + retry with exponential backoff and jitter** for its
 synchronous REST call to Account Service.
 
 This was selected because it handles transient network failures, short Account
 Service restarts, and slow responses without letting Gateway requests hang
-indefinitely. Retries are safe because both services use `eventId` as an
-idempotency key, so a retried transaction cannot be applied twice. If all
-attempts fail, Gateway returns `503 Service Unavailable` and does not store the
-event as accepted.
+indefinitely. Jitter spreads retry attempts out so multiple Gateway requests do
+not retry in lockstep after an Account Service slowdown or restart. Retries are
+safe because both services use `eventId` as an idempotency key, so a retried
+transaction cannot be applied twice. If all attempts fail, Gateway returns
+`503 Service Unavailable` and does not store the event as accepted.
 
 Configuration:
 
 - `ACCOUNT_SERVICE_TIMEOUT_SECONDS`: per-attempt timeout, default `2.0`.
 - `ACCOUNT_SERVICE_RETRY_ATTEMPTS`: total attempts, default `3`.
 - `ACCOUNT_SERVICE_RETRY_BACKOFF_SECONDS`: initial retry backoff, default `0.1`.
+- `ACCOUNT_SERVICE_RETRY_JITTER_FACTOR`: jitter range around each backoff delay,
+  default `0.2`.
+
+## Gateway Rate Limiting
+
+Gateway applies an in-memory sliding-window rate limit to public application
+endpoints. Health and metrics are exempt so probes and scrapes keep working.
+The limiter uses `X-Client-Id` when provided; otherwise it falls back to the
+client host.
+
+Configuration:
+
+- `GATEWAY_RATE_LIMIT_ENABLED`: enable or disable rate limiting, default `true`.
+- `GATEWAY_RATE_LIMIT_REQUESTS`: allowed requests per window, default `100`.
+- `GATEWAY_RATE_LIMIT_WINDOW_SECONDS`: window size, default `60`.
+
+When the limit is exceeded, Gateway returns `429 Too Many Requests` with
+`Retry-After`.
 
 ## Endpoint Behavior Checklist
 
@@ -242,7 +261,25 @@ curl -i -X POST "$GATEWAY/events" \
   }'
 ```
 
-### 7. Account Balance Through Gateway
+### 7. Gateway Rate Limiting
+
+Expected behavior:
+
+- Gateway allows the configured number of requests per client/window.
+- The next request returns `429 Too Many Requests`.
+- The response includes `Retry-After` and `X-Trace-Id`.
+
+```bash
+for i in $(seq 1 101); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    -H "X-Client-Id: readme-rate-limit" \
+    "$GATEWAY/events/missing-event"
+done | tail
+```
+
+With the default Compose settings, the final status printed should be `429`.
+
+### 8. Account Balance Through Gateway
 
 Expected behavior:
 
@@ -255,7 +292,7 @@ Expected behavior:
 curl -i -H "X-Trace-Id: $TRACE" "$GATEWAY/accounts/acct-readme/balance"
 ```
 
-### 8. Account Details Through Gateway
+### 9. Account Details Through Gateway
 
 Expected behavior:
 
@@ -269,7 +306,7 @@ Expected behavior:
 curl -i -H "X-Trace-Id: $TRACE" "$GATEWAY/accounts/acct-readme"
 ```
 
-### 9. Account Service Internal Contract
+### 10. Account Service Internal Contract
 
 Expected behavior:
 
@@ -286,21 +323,24 @@ docker compose ps
 The output should show a host port mapping for `event-gateway` only. Account
 Service should not list a published `0.0.0.0:8001` or `127.0.0.1:8001` port.
 
-### 10. Metrics
+### 11. Prometheus Metrics
 
 Expected behavior:
 
-- Gateway `/metrics` includes request counts, Account Service call outcomes,
-  and Account Service call latency aggregates.
-- Account Service `/metrics` includes request counts and is available from
-  inside the Compose network.
+- Gateway `/metrics` returns Prometheus text exposition with request counts,
+  Account Service call outcomes, and Account Service call latency aggregates.
+- Account Service `/metrics` returns Prometheus text exposition with request
+  counts and is available from inside the Compose network.
 
 ```bash
 curl -i "$GATEWAY/metrics"
 docker compose exec account-service python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8001/metrics').read().decode())"
 ```
 
-### 11. Trace Propagation
+Look for metrics such as `http_requests_total`,
+`account_service_calls_total`, and `account_service_call_latency_seconds`.
+
+### 12. Trace Propagation
 
 Expected behavior:
 
@@ -312,7 +352,7 @@ Expected behavior:
 docker compose logs event-gateway account-service | grep "$TRACE"
 ```
 
-### 12. Graceful Degradation
+### 13. Graceful Degradation
 
 Expected behavior:
 
@@ -363,9 +403,10 @@ docker compose start account-service
 - Gateway returns `503 Service Unavailable` when Account Service is unreachable.
 - Gateway account balance/details queries report Account Service
   unreachability clearly when Account Service is down.
+- Gateway rate limiting returns `429 Too Many Requests` with `Retry-After`.
 - Gateway read endpoints continue working during Account Service outage.
 - Gateway propagates `X-Trace-Id` to Account Service.
 - Both services emit JSON request logs containing `traceId`.
 - Both services expose `/health`.
-- Both services expose `/metrics`.
+- Both services expose Prometheus-format `/metrics`.
 - Automated tests pass with `pytest`.

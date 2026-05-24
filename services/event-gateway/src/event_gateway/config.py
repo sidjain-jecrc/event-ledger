@@ -10,6 +10,10 @@ class Settings:
     account_service_timeout_seconds: float
     account_service_retry_attempts: int
     account_service_retry_backoff_seconds: float = 0.1
+    account_service_retry_jitter_factor: float = 0.2
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = 100
+    rate_limit_window_seconds: int = 60
 
 
 def get_settings() -> Settings:
@@ -32,4 +36,19 @@ def get_settings() -> Settings:
         account_service_retry_backoff_seconds=float(
             os.getenv("ACCOUNT_SERVICE_RETRY_BACKOFF_SECONDS", "0.1")
         ),
+        account_service_retry_jitter_factor=float(
+            os.getenv("ACCOUNT_SERVICE_RETRY_JITTER_FACTOR", "0.2")
+        ),
+        rate_limit_enabled=_get_bool("GATEWAY_RATE_LIMIT_ENABLED", default=True),
+        rate_limit_requests=int(os.getenv("GATEWAY_RATE_LIMIT_REQUESTS", "100")),
+        rate_limit_window_seconds=int(
+            os.getenv("GATEWAY_RATE_LIMIT_WINDOW_SECONDS", "60")
+        ),
     )
+
+
+def _get_bool(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}

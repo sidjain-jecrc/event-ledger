@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from uuid import UUID
 
@@ -337,6 +338,75 @@ def test_gateway_account_query_returns_clear_error_when_account_is_unreachable(
     assert response.json()["detail"] == "Account Service is unreachable"
 
 
+def test_gateway_rate_limit_returns_429_after_configured_limit(gateway_settings):
+    limited_settings = replace(
+        gateway_settings,
+        rate_limit_enabled=True,
+        rate_limit_requests=2,
+        rate_limit_window_seconds=60,
+    )
+    client = TestClient(
+        create_app(limited_settings, account_applier=NoopAccountApplier())
+    )
+    headers = {"X-Client-Id": "client-a", "X-Trace-Id": "trace-rate-limit"}
+
+    first_response = client.get("/events/missing", headers=headers)
+    second_response = client.get("/events/missing", headers=headers)
+    limited_response = client.get("/events/missing", headers=headers)
+
+    assert first_response.status_code == 404
+    assert second_response.status_code == 404
+    assert limited_response.status_code == 429
+    assert limited_response.json()["detail"] == "Rate limit exceeded"
+    assert limited_response.headers["Retry-After"] == "60"
+    assert limited_response.headers["X-Trace-Id"] == "trace-rate-limit"
+
+
+def test_gateway_rate_limit_tracks_client_id_independently(gateway_settings):
+    limited_settings = replace(
+        gateway_settings,
+        rate_limit_enabled=True,
+        rate_limit_requests=1,
+        rate_limit_window_seconds=60,
+    )
+    client = TestClient(
+        create_app(limited_settings, account_applier=NoopAccountApplier())
+    )
+
+    first_response = client.get(
+        "/events/missing",
+        headers={"X-Client-Id": "client-a"},
+    )
+    limited_response = client.get(
+        "/events/missing",
+        headers={"X-Client-Id": "client-a"},
+    )
+    other_client_response = client.get(
+        "/events/missing",
+        headers={"X-Client-Id": "client-b"},
+    )
+
+    assert first_response.status_code == 404
+    assert limited_response.status_code == 429
+    assert other_client_response.status_code == 404
+
+
+def test_gateway_rate_limit_can_be_disabled(gateway_settings):
+    disabled_settings = replace(
+        gateway_settings,
+        rate_limit_enabled=False,
+        rate_limit_requests=1,
+        rate_limit_window_seconds=60,
+    )
+    client = TestClient(
+        create_app(disabled_settings, account_applier=NoopAccountApplier())
+    )
+
+    responses = [client.get("/events/missing") for _ in range(3)]
+
+    assert [response.status_code for response in responses] == [404, 404, 404]
+
+
 def test_gateway_generates_trace_id_when_request_has_none(client):
     response = client.get("/health")
 
@@ -375,22 +445,19 @@ def test_gateway_metrics_report_request_counts_and_account_call_metrics(client):
     assert health_response.status_code == 200
     assert event_response.status_code == 201
     assert metrics_response.status_code == 200
-    assert metrics_response.json() == {
-        "service": "event-gateway",
-        "requests": {
-            "GET /health 200": 1,
-            "POST /events 201": 1,
-        },
-        "accountServiceCalls": {
-            "outcomes": {},
-            "latencyMs": {
-                "count": 0,
-                "total": 0.0,
-                "average": 0.0,
-                "max": 0.0,
-            },
-        },
-    }
+    assert metrics_response.headers["content-type"].startswith("text/plain")
+    assert (
+        'http_requests_total{service="event-gateway",method="GET",'
+        'path="/health",status="200"} 1'
+    ) in metrics_response.text
+    assert (
+        'http_requests_total{service="event-gateway",method="POST",'
+        'path="/events",status="201"} 1'
+    ) in metrics_response.text
+    assert "account_service_calls_total" in metrics_response.text
+    assert (
+        'account_service_call_latency_seconds_count{service="event-gateway"} 0'
+    ) in metrics_response.text
 
 
 def test_gateway_health_reports_database_and_account_service_url(gateway_settings):

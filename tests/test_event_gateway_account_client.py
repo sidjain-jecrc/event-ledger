@@ -10,6 +10,7 @@ from event_gateway.schemas import EventRequest
 def gateway_settings(
     retry_attempts=3,
     retry_backoff_seconds=0.0,
+    retry_jitter_factor=0.0,
 ) -> Settings:
     return Settings(
         service_name="event-gateway",
@@ -18,6 +19,7 @@ def gateway_settings(
         account_service_timeout_seconds=2.0,
         account_service_retry_attempts=retry_attempts,
         account_service_retry_backoff_seconds=retry_backoff_seconds,
+        account_service_retry_jitter_factor=retry_jitter_factor,
     )
 
 
@@ -188,6 +190,36 @@ def test_http_account_applier_uses_exponential_backoff_between_retries():
     assert observed_delays == [0.25, 0.5]
 
 
+def test_http_account_applier_applies_deterministic_jitter_to_retry_backoff():
+    attempts = 0
+    observed_delays = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(201, json={"status": "ok"}, request=request)
+
+    jitter_values = iter([0.75, 0.25])
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    applier = HttpAccountApplier(
+        gateway_settings(
+            retry_attempts=3,
+            retry_backoff_seconds=0.2,
+            retry_jitter_factor=0.5,
+        ),
+        client=client,
+        sleep=observed_delays.append,
+        random_source=lambda: next(jitter_values),
+    )
+
+    applier.apply_event(event_request())
+
+    assert attempts == 3
+    assert observed_delays == pytest.approx([0.25, 0.3])
+
+
 def test_http_account_applier_retries_retryable_status_codes():
     attempts = 0
 
@@ -244,6 +276,17 @@ def test_http_account_applier_records_account_service_call_metrics():
     }
     assert snapshot["accountServiceCalls"]["latencyMs"]["count"] == 2
     assert snapshot["accountServiceCalls"]["latencyMs"]["total"] >= 0
+
+    prometheus_metrics = metrics.to_prometheus("event-gateway")
+    assert (
+        'account_service_calls_total{service="event-gateway",outcome="503"} 1'
+    ) in prometheus_metrics
+    assert (
+        'account_service_calls_total{service="event-gateway",outcome="201"} 1'
+    ) in prometheus_metrics
+    assert (
+        'account_service_call_latency_seconds_count{service="event-gateway"} 2'
+    ) in prometheus_metrics
 
 
 def test_http_account_applier_returns_503_after_retryable_status_exhausted():

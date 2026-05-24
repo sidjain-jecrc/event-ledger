@@ -1,5 +1,6 @@
 from datetime import UTC
 from decimal import Decimal
+import random
 import time
 from collections.abc import Callable
 from typing import Protocol
@@ -94,6 +95,7 @@ class HttpAccountApplier:
         settings: Settings,
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] | None = None,
+        random_source: Callable[[], float] | None = None,
         metrics: Metrics | None = None,
     ) -> None:
         self.base_url = settings.account_service_url.rstrip("/")
@@ -103,8 +105,13 @@ class HttpAccountApplier:
             0.0,
             settings.account_service_retry_backoff_seconds,
         )
+        self.retry_jitter_factor = max(
+            0.0,
+            settings.account_service_retry_jitter_factor,
+        )
         self.client = client or httpx.Client(timeout=self.timeout_seconds)
         self.sleep = sleep or time.sleep
+        self.random_source = random_source or random.random
         self.metrics = metrics
 
     def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
@@ -221,9 +228,18 @@ class HttpAccountApplier:
         ) from last_error
 
     def _sleep_before_retry(self, completed_attempt: int) -> None:
-        delay = self.retry_backoff_seconds * (2 ** (completed_attempt - 1))
+        base_delay = self.retry_backoff_seconds * (2 ** (completed_attempt - 1))
+        delay = self._apply_jitter(base_delay)
         if delay > 0:
             self.sleep(delay)
+
+    def _apply_jitter(self, base_delay: float) -> float:
+        if base_delay <= 0 or self.retry_jitter_factor <= 0:
+            return base_delay
+
+        random_value = min(max(self.random_source(), 0.0), 1.0)
+        jitter_offset = self.retry_jitter_factor * ((random_value * 2) - 1)
+        return max(0.0, base_delay * (1 + jitter_offset))
 
     def _record_account_service_call(self, *, outcome: str, start: float) -> None:
         if self.metrics is None:
