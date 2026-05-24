@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -186,3 +188,25 @@ def test_health_metrics_and_trace_header(client):
     assert metrics_response.status_code == 200
     assert metrics_response.json()["service"] == "account-service"
     assert metrics_response.json()["requests"]["GET /health 200"] == 1
+
+
+def test_account_service_logs_structured_json_with_trace_id(client, caplog):
+    caplog.set_level("INFO", logger="account_service")
+
+    response = client.get("/health", headers={"X-Trace-Id": "trace-account-log"})
+
+    account_logs = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "account_service"
+    ]
+
+    assert response.status_code == 200
+    assert response.headers["X-Trace-Id"] == "trace-account-log"
+    assert account_logs[-1]["service"] == "account-service"
+    assert account_logs[-1]["traceId"] == "trace-account-log"
+    assert account_logs[-1]["level"] == "INFO"
+    assert account_logs[-1]["message"] == "request completed"
+    assert account_logs[-1]["method"] == "GET"
+    assert account_logs[-1]["path"] == "/health"
+    assert account_logs[-1]["statusCode"] == 200
