@@ -52,6 +52,13 @@ ambiguity in favor of the handout.
   call-metric recording; manual two-service verification confirmed `/health`
   and `/metrics` responses from both services; README documentation explains
   the metrics shapes.
+- **Phase 7 complete**: Dockerfile and `docker-compose.yml` run both services as
+  independent processes, Compose config uses separate SQLite database files and
+  named volumes for each service, health checks are configured for both
+  containers, README includes Docker Compose startup, local fallback commands,
+  verification commands, and a final acceptance checklist, delivery artifact
+  tests cover the Compose/Docker/README contract, and final automated
+  verification passed.
 
 ## Architecture Summary
 
@@ -236,5 +243,7 @@ The implementation is complete when:
   `409 Conflict` so balances are not computed across currencies.
 - Event Gateway uses the real Gateway-to-Account REST client by default; tests
   can still inject fake account appliers for focused behavior checks.
+- Docker Compose is the preferred run path and maps Gateway to port `8000` and
+  Account Service to port `8001`.
 - This repository starts with `event-ledger-candidate-handout.md`; this document
   is the implementation planning companion.

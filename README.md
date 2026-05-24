@@ -16,7 +16,7 @@ databases. They communicate through synchronous REST.
 
 ## Current Phase
 
-Phase 6 is metrics and health polish:
+Phase 7 is delivery and final acceptance:
 
 - Python + FastAPI service skeletons
 - dependency and test configuration
@@ -46,6 +46,9 @@ Phase 6 is metrics and health polish:
   outcomes, and Account Service call latency aggregates
 - Account Service exposes `/metrics` with request counts
 - Both services expose `/health` with SQLite connectivity diagnostics
+- Dockerfile and Docker Compose run both services as independent processes
+- Docker Compose uses separate SQLite database files and separate named volumes
+- Final acceptance verification is documented below
 
 ## Local Setup
 
@@ -60,6 +63,37 @@ python -m pip install -e ".[dev]"
 ```bash
 pytest
 ```
+
+## Run With Docker Compose
+
+Docker Compose is the preferred way to run both services together:
+
+```bash
+docker compose up --build
+```
+
+Service URLs:
+
+- Event Gateway API: `http://127.0.0.1:8000`
+- Account Service: `http://127.0.0.1:8001`
+
+Quick smoke check:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8001/health
+```
+
+Stop the services:
+
+```bash
+docker compose down
+```
+
+Compose uses separate SQLite database files:
+
+- Account Service: `sqlite:////data/account_service.db`
+- Event Gateway API: `sqlite:////data/event_gateway.db`
 
 ## Run Services Locally
 
@@ -251,12 +285,18 @@ Account Service metrics example:
 }
 ```
 
-## Phase 6 Verification
+## Phase 7 Verification
 
 Automated verification:
 
 ```bash
 pytest
+```
+
+Docker Compose configuration verification:
+
+```bash
+docker compose config
 ```
 
 Manual verification example:
@@ -299,6 +339,26 @@ curl -X POST http://127.0.0.1:8000/events \
   -H "Content-Type: application/json" \
   -d '{"eventId":"evt-002","accountId":"acct-123","type":"CREDIT","amount":25.00,"currency":"USD","eventTimestamp":"2026-05-15T15:02:11Z","metadata":{"source":"manual-outage"}}'
 ```
+
+## Final Acceptance Checklist
+
+- Both services run independently as separate FastAPI processes.
+- Docker Compose starts both services together.
+- Each service uses a separate SQLite database.
+- Gateway `POST /events` validates event payloads.
+- Gateway duplicate `eventId` submissions return the original event and do not
+  call Account Service again.
+- Gateway event listings are ordered chronologically by `eventTimestamp`.
+- Account Service computes balance as CREDIT minus DEBIT.
+- Account Service applies duplicate `eventId` transactions idempotently.
+- Gateway persists events only after Account Service accepts the transaction.
+- Gateway returns `503 Service Unavailable` when Account Service is unreachable.
+- Gateway read endpoints continue working during Account Service outage.
+- Gateway propagates `X-Trace-Id` to Account Service.
+- Both services emit JSON request logs containing `traceId`.
+- Both services expose `/health`.
+- Both services expose custom metrics.
+- Automated tests pass with `pytest`.
 
 ## Implementation Defaults
 
