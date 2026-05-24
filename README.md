@@ -1,82 +1,30 @@
 # Event Ledger
 
 Event Ledger is a two-service system for processing financial transaction
-events. The requirements live in `event-ledger-candidate-handout.md`; review
-that document before implementing or marking any feature complete.
+events. The source requirements live in `event-ledger-candidate-handout.md`.
 
 ## Architecture
 
-- **Event Gateway API**: public-facing FastAPI service that receives events,
-  validates requests, stores accepted event records, and calls Account Service.
-- **Account Service**: internal FastAPI service that owns account balances and
-  transaction history.
+- **Event Gateway API** is the public-facing service. It validates submitted
+  events, enforces idempotency by `eventId`, stores accepted event records in
+  its own SQLite database, and calls Account Service over synchronous REST.
+- **Account Service** is the internal account-state service. It stores
+  transactions in its own SQLite database, applies idempotency by `eventId`, and
+  computes account balances as CREDIT minus DEBIT.
 
-The services must run as independent processes and use separate SQLite
-databases. They communicate through synchronous REST.
-
-## Current Phase
-
-Phase 7 is delivery and final acceptance:
-
-- Python + FastAPI service skeletons
-- dependency and test configuration
-- basic app factories
-- Account Service SQLite persistence
-- Account Service transaction application
-- Account Service idempotency by `eventId`
-- Account Service balance and account detail endpoints
-- Account Service health, metrics, trace header echoing, and structured request
-  logs
-- Event Gateway SQLite event persistence
-- Event Gateway event validation and duplicate detection by `eventId`
-- Event Gateway event lookup and account event listing ordered by
-  `eventTimestamp`
-- Event Gateway real synchronous REST call to Account Service
-- Gateway persists accepted events only after Account Service successfully
-  applies the transaction
-- Gateway Account Service calls use bounded timeout + retry with exponential
-  backoff
-- Gateway returns `503 Service Unavailable` when Account Service cannot be
-  reached
-- Gateway local event reads continue to work while Account Service is down
-- Gateway accepts or generates `X-Trace-Id` for every request
-- Gateway propagates `X-Trace-Id` to Account Service
-- Gateway and Account Service both emit JSON request logs with the trace ID
-- Gateway exposes `/metrics` with request counts, Account Service call
-  outcomes, and Account Service call latency aggregates
-- Account Service exposes `/metrics` with request counts
-- Both services expose `/health` with SQLite connectivity diagnostics
-- Dockerfile and Docker Compose run both services as independent processes
-- Docker Compose uses separate SQLite database files and separate named volumes
-- Final acceptance verification is documented below
+The services run as independent processes. They do not share a database or
+in-process state. Docker Compose starts both services and wires Gateway to
+Account Service through `http://account-service:8001`.
 
 ## Prerequisites
 
-- Python 3.11 or newer.
-- `pip` for installing Python dependencies.
-- Docker Desktop or another Docker Compose compatible runtime, if using the
-  preferred Docker Compose startup path.
-- `curl` for the manual verification commands.
+- Docker Desktop or another Docker Compose compatible runtime.
+- `curl` for endpoint verification.
+- Python 3.11+ and `pip` only if you want to run the automated tests locally.
 
-## Local Setup
+## Start And Stop Services
 
-Install dependencies in a virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev]"
-```
-
-## Run Tests
-
-```bash
-pytest
-```
-
-## Run With Docker Compose
-
-Docker Compose is the preferred way to run both services together:
+Start both services with Docker Compose:
 
 ```bash
 docker compose up --build
@@ -94,297 +42,358 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8001/health
 ```
 
-Stop the services:
+Stop services and keep Docker volumes:
 
 ```bash
 docker compose down
 ```
 
-Compose uses separate SQLite database files:
-
-- Account Service: `sqlite:////data/account_service.db`
-- Event Gateway API: `sqlite:////data/event_gateway.db`
-
-## Run Services Locally
-
-Account Service:
+Stop services and remove persisted SQLite volumes:
 
 ```bash
-uvicorn account_service.main:app --app-dir services/account-service/src --port 8001
+docker compose down -v
 ```
 
-Event Gateway API:
-
-```bash
-uvicorn event_gateway.main:app --app-dir services/event-gateway/src --port 8000
-```
-
-## Account Service API
-
-### `POST /accounts/{accountId}/transactions`
-
-Applies a transaction to an account. The Account Service treats `eventId` as an
-idempotency key, so duplicate submissions return the original transaction with
-`200 OK` and do not change the balance again. New transactions return
-`201 Created`.
-
-```json
-{
-  "eventId": "evt-001",
-  "type": "CREDIT",
-  "amount": 150.00,
-  "currency": "USD",
-  "eventTimestamp": "2026-05-15T14:02:11Z",
-  "metadata": {
-    "source": "mainframe-batch"
-  }
-}
-```
-
-The first transaction establishes the account currency. Later transactions for
-the same account with a different currency return `409 Conflict` to avoid
-mixing currencies in a single balance.
-
-### `GET /accounts/{accountId}/balance`
-
-Returns the current balance for an existing account.
-
-### `GET /accounts/{accountId}`
-
-Returns account details, balance, transaction count, and recent transactions.
-Recent transactions are ordered from newest to oldest by event timestamp.
-
-### `GET /health`
-
-Returns service status and SQLite connectivity diagnostics.
-
-### `GET /metrics`
-
-Returns in-memory request counts by method, route, and status code.
-
-## Event Gateway API
-
-The Gateway applies new events by calling Account Service synchronously over
-REST. The Gateway stores an event locally only after Account Service accepts the
-transaction. Calls to Account Service use a bounded retry policy with
-exponential backoff for transient request errors, timeouts, `408`, `429`, and
-`5xx` responses. Gateway does not retry non-transient Account Service `4xx`
-responses.
-
-### `POST /events`
-
-Validates and accepts a transaction event into Gateway local storage. New events
-return `201 Created` after Account Service applies the transaction. Duplicate
-`eventId` submissions return the original stored event with `200 OK` and do not
-call Account Service again. If Account Service is unavailable after the retry
-policy is exhausted, the Gateway returns `503 Service Unavailable` and does not
-store the new event.
-
-```json
-{
-  "eventId": "evt-001",
-  "accountId": "acct-123",
-  "type": "CREDIT",
-  "amount": 150.00,
-  "currency": "USD",
-  "eventTimestamp": "2026-05-15T14:02:11Z",
-  "metadata": {
-    "source": "mainframe-batch"
-  }
-}
-```
-
-Accepted event responses include `status: "ACCEPTED"`.
-
-### `GET /events/{eventId}`
-
-Returns one stored Gateway event, or `404 Not Found` when the event does not
-exist.
-
-### `GET /events?account={accountId}`
-
-Returns events for the account from Gateway local storage. Results are ordered
-chronologically by `eventTimestamp`.
-
-### `GET /health`
-
-Returns Gateway service status, SQLite connectivity diagnostics, and configured
-Account Service URL.
-
-### `GET /metrics`
-
-Returns in-memory Gateway metrics:
-
-- request counts by method, route, and status code
-- Account Service call outcomes by HTTP status or request error
-- Account Service call latency count, total, average, and max in milliseconds
-
-## Resiliency Configuration
-
-The selected resiliency pattern is **timeout + retry with exponential backoff**
-on the Gateway's synchronous REST call to Account Service.
-
-This pattern was chosen because it directly addresses transient network
-failures, short Account Service restarts, and slow responses without letting
-Gateway requests hang indefinitely. Retries are safe for this system because
-both services use `eventId` as an idempotency key, so a retried transaction
-cannot be applied twice. If all attempts fail, Gateway returns
-`503 Service Unavailable` and does not store the event as accepted.
-
-The Gateway Account Service client is configured with environment variables:
-
-- `ACCOUNT_SERVICE_TIMEOUT_SECONDS`: per-attempt timeout, default `2.0`.
-- `ACCOUNT_SERVICE_RETRY_ATTEMPTS`: total attempts, default `3`.
-- `ACCOUNT_SERVICE_RETRY_BACKOFF_SECONDS`: initial retry backoff, default `0.1`.
-
-Backoff doubles between attempts. For example, with the default backoff and
-three total attempts, retries wait about `0.1s` and then `0.2s`.
-
-## Tracing And Logs
-
-Both services use `X-Trace-Id` as the trace header.
-
-- If a client sends `X-Trace-Id` to Gateway, Gateway returns the same value in
-  its response and propagates it to Account Service.
-- If a client omits `X-Trace-Id`, Gateway generates one and returns it in the
-  response.
-- Gateway and Account Service emit JSON request logs with `timestamp`, `level`,
-  `service`, `traceId`, `message`, `method`, `path`, `statusCode`, and
-  `durationMs`.
-
-Example log:
-
-```json
-{
-  "durationMs": 25.82,
-  "level": "INFO",
-  "message": "request completed",
-  "method": "POST",
-  "path": "/events",
-  "service": "event-gateway",
-  "statusCode": 201,
-  "timestamp": "2026-05-23T23:03:43.698452Z",
-  "traceId": "manual-phase5-trace"
-}
-```
-
-## Metrics
-
-Gateway metrics example:
-
-```json
-{
-  "service": "event-gateway",
-  "requests": {
-    "GET /health 200": 1,
-    "POST /events 201": 1
-  },
-  "accountServiceCalls": {
-    "outcomes": {
-      "201": 1
-    },
-    "latencyMs": {
-      "count": 1,
-      "total": 9.2,
-      "average": 9.2,
-      "max": 9.2
-    }
-  }
-}
-```
-
-Account Service metrics example:
-
-```json
-{
-  "service": "account-service",
-  "requests": {
-    "GET /health 200": 1,
-    "POST /accounts/{accountId}/transactions 201": 1
-  }
-}
-```
-
-## Phase 7 Verification
-
-Automated verification:
-
-```bash
-pytest
-```
-
-Docker Compose configuration verification:
+Validate the Compose file without starting services:
 
 ```bash
 docker compose config
 ```
 
-Manual verification example:
+## Run Tests
 
 ```bash
-uvicorn account_service.main:app --app-dir services/account-service/src --port 8001
-curl -H "X-Trace-Id: manual-phase-1" http://127.0.0.1:8001/health
-curl -X POST http://127.0.0.1:8001/accounts/acct-123/transactions \
-  -H "Content-Type: application/json" \
-  -H "X-Trace-Id: manual-phase-1" \
-  -d '{"eventId":"evt-001","type":"CREDIT","amount":150.00,"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z","metadata":{"source":"manual"}}'
-curl http://127.0.0.1:8001/accounts/acct-123/balance
-curl http://127.0.0.1:8001/metrics
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+pytest
 ```
 
-Gateway-to-Account manual verification, tracing, and degradation example:
+## Resiliency Pattern
+
+The Gateway uses **timeout + retry with exponential backoff** for its
+synchronous REST call to Account Service.
+
+This was selected because it handles transient network failures, short Account
+Service restarts, and slow responses without letting Gateway requests hang
+indefinitely. Retries are safe because both services use `eventId` as an
+idempotency key, so a retried transaction cannot be applied twice. If all
+attempts fail, Gateway returns `503 Service Unavailable` and does not store the
+event as accepted.
+
+Configuration:
+
+- `ACCOUNT_SERVICE_TIMEOUT_SECONDS`: per-attempt timeout, default `2.0`.
+- `ACCOUNT_SERVICE_RETRY_ATTEMPTS`: total attempts, default `3`.
+- `ACCOUNT_SERVICE_RETRY_BACKOFF_SECONDS`: initial retry backoff, default `0.1`.
+
+## Endpoint Behavior Checklist
+
+Set shell variables used by the examples:
 
 ```bash
-uvicorn account_service.main:app --app-dir services/account-service/src --port 8001
-ACCOUNT_SERVICE_URL=http://127.0.0.1:8001 \
-  uvicorn event_gateway.main:app --app-dir services/event-gateway/src --port 8000
+GATEWAY=http://127.0.0.1:8000
+ACCOUNT=http://127.0.0.1:8001
+TRACE=readme-trace-001
+```
 
-curl -H "X-Trace-Id: manual-phase5-trace" http://127.0.0.1:8000/health
-curl -X POST http://127.0.0.1:8000/events \
+### 1. Health Checks
+
+Expected behavior:
+
+- Gateway `/health` returns service status, database diagnostics, and Account
+  Service URL.
+- Account Service `/health` returns service status and database diagnostics.
+- Gateway returns the same `X-Trace-Id` when one is provided.
+
+```bash
+curl -i -H "X-Trace-Id: $TRACE" "$GATEWAY/health"
+curl -i -H "X-Trace-Id: $TRACE" "$ACCOUNT/health"
+```
+
+### 2. Submit An Event Through Gateway
+
+Expected behavior:
+
+- Gateway validates the event.
+- Gateway calls Account Service before storing the event.
+- New event returns `201 Created`.
+- Response includes `status: "ACCEPTED"`.
+- Response includes `X-Trace-Id`.
+
+```bash
+curl -i -X POST "$GATEWAY/events" \
   -H "Content-Type: application/json" \
-  -H "X-Trace-Id: manual-phase5-trace" \
-  -d '{"eventId":"evt-001","accountId":"acct-123","type":"CREDIT","amount":150.00,"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z","metadata":{"source":"manual"}}'
-curl http://127.0.0.1:8000/events/evt-001
-curl "http://127.0.0.1:8000/events?account=acct-123"
-curl http://127.0.0.1:8001/accounts/acct-123/balance
-curl http://127.0.0.1:8000/metrics
-curl http://127.0.0.1:8001/metrics
+  -H "X-Trace-Id: $TRACE" \
+  -d '{
+    "eventId": "evt-readme-001",
+    "accountId": "acct-readme",
+    "type": "CREDIT",
+    "amount": 150.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T14:02:11Z",
+    "metadata": {
+      "source": "readme"
+    }
+  }'
+```
 
-# Confirm both service logs include the same traceId.
+### 3. Gateway Event Idempotency
 
-# Stop Account Service, then verify Gateway degrades cleanly.
-curl http://127.0.0.1:8000/events/evt-001
-curl "http://127.0.0.1:8000/events?account=acct-123"
-curl -X POST http://127.0.0.1:8000/events \
+Expected behavior:
+
+- Reusing `eventId` returns the originally accepted event with `200 OK`.
+- Gateway does not call Account Service again.
+- Account balance is not changed by the duplicate.
+
+```bash
+curl -i -X POST "$GATEWAY/events" \
   -H "Content-Type: application/json" \
-  -d '{"eventId":"evt-002","accountId":"acct-123","type":"CREDIT","amount":25.00,"currency":"USD","eventTimestamp":"2026-05-15T15:02:11Z","metadata":{"source":"manual-outage"}}'
+  -H "X-Trace-Id: $TRACE" \
+  -d '{
+    "eventId": "evt-readme-001",
+    "accountId": "acct-readme",
+    "type": "DEBIT",
+    "amount": 999.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T18:02:11Z",
+    "metadata": {
+      "source": "readme-duplicate"
+    }
+  }'
+```
+
+### 4. Read One Gateway Event
+
+Expected behavior:
+
+- Existing event returns `200 OK`.
+- Missing event returns `404 Not Found`.
+
+```bash
+curl -i "$GATEWAY/events/evt-readme-001"
+curl -i "$GATEWAY/events/missing-event"
+```
+
+### 5. Out-Of-Order Event Listing
+
+Expected behavior:
+
+- Events may arrive out of order.
+- Gateway lists account events chronologically by `eventTimestamp`.
+- After these commands, expected order for `acct-readme` is:
+  `evt-readme-002`, `evt-readme-001`, `evt-readme-003`.
+
+```bash
+curl -i -X POST "$GATEWAY/events" \
+  -H "Content-Type: application/json" \
+  -H "X-Trace-Id: $TRACE" \
+  -d '{
+    "eventId": "evt-readme-003",
+    "accountId": "acct-readme",
+    "type": "DEBIT",
+    "amount": 25.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T16:02:11Z",
+    "metadata": {
+      "source": "readme"
+    }
+  }'
+
+curl -i -X POST "$GATEWAY/events" \
+  -H "Content-Type: application/json" \
+  -H "X-Trace-Id: $TRACE" \
+  -d '{
+    "eventId": "evt-readme-002",
+    "accountId": "acct-readme",
+    "type": "CREDIT",
+    "amount": 10.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T13:02:11Z",
+    "metadata": {
+      "source": "readme"
+    }
+  }'
+
+curl -i "$GATEWAY/events?account=acct-readme"
+```
+
+### 6. Gateway Validation Errors
+
+Expected behavior:
+
+- Invalid events return a meaningful `4xx` response.
+- Non-positive amounts are rejected.
+- Unknown event types are rejected.
+
+```bash
+curl -i -X POST "$GATEWAY/events" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventId": "evt-readme-invalid",
+    "accountId": "acct-readme",
+    "type": "TRANSFER",
+    "amount": 0,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T14:02:11Z"
+  }'
+```
+
+### 7. Account Balance
+
+Expected behavior:
+
+- Balance is CREDIT minus DEBIT.
+- For the `acct-readme` events above, expected balance is `135`.
+
+```bash
+curl -i "$ACCOUNT/accounts/acct-readme/balance"
+```
+
+### 8. Account Details
+
+Expected behavior:
+
+- Account details include account ID, currency, current balance, transaction
+  count, and recent transactions.
+- Recent transactions are returned newest first.
+
+```bash
+curl -i "$ACCOUNT/accounts/acct-readme"
+```
+
+### 9. Account Service Direct Transaction And Idempotency
+
+Expected behavior:
+
+- Account Service accepts direct internal transaction application.
+- New transaction returns `201 Created`.
+- Duplicate `eventId` returns `200 OK` with `idempotent: true`.
+- Duplicate transaction does not change balance twice.
+
+```bash
+curl -i -X POST "$ACCOUNT/accounts/acct-direct/transactions" \
+  -H "Content-Type: application/json" \
+  -H "X-Trace-Id: $TRACE" \
+  -d '{
+    "eventId": "evt-direct-001",
+    "type": "CREDIT",
+    "amount": 50.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T14:02:11Z",
+    "metadata": {
+      "source": "readme-direct"
+    }
+  }'
+
+curl -i -X POST "$ACCOUNT/accounts/acct-direct/transactions" \
+  -H "Content-Type: application/json" \
+  -H "X-Trace-Id: $TRACE" \
+  -d '{
+    "eventId": "evt-direct-001",
+    "type": "CREDIT",
+    "amount": 50.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T14:02:11Z",
+    "metadata": {
+      "source": "readme-direct"
+    }
+  }'
+
+curl -i "$ACCOUNT/accounts/acct-direct/balance"
+```
+
+### 10. Account Service Validation
+
+Expected behavior:
+
+- Invalid internal transaction payloads return a meaningful `4xx` response.
+
+```bash
+curl -i -X POST "$ACCOUNT/accounts/acct-direct/transactions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventId": "evt-direct-invalid",
+    "type": "TRANSFER",
+    "amount": 0,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T14:02:11Z"
+  }'
+```
+
+### 11. Metrics
+
+Expected behavior:
+
+- Gateway `/metrics` includes request counts, Account Service call outcomes,
+  and Account Service call latency aggregates.
+- Account Service `/metrics` includes request counts.
+
+```bash
+curl -i "$GATEWAY/metrics"
+curl -i "$ACCOUNT/metrics"
+```
+
+### 12. Trace Propagation
+
+Expected behavior:
+
+- Gateway logs include the client-provided trace ID.
+- Account Service logs include the same trace ID for the downstream transaction
+  request.
+
+```bash
+docker compose logs event-gateway account-service | grep "$TRACE"
+```
+
+### 13. Graceful Degradation
+
+Expected behavior:
+
+- When Account Service is stopped, Gateway `POST /events` returns
+  `503 Service Unavailable`.
+- Gateway read endpoints still work because they use Gateway local storage.
+- Failed new events are not stored.
+
+```bash
+docker compose stop account-service
+
+curl -i "$GATEWAY/events/evt-readme-001"
+curl -i "$GATEWAY/events?account=acct-readme"
+
+curl -i -X POST "$GATEWAY/events" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventId": "evt-readme-down",
+    "accountId": "acct-readme",
+    "type": "CREDIT",
+    "amount": 25.00,
+    "currency": "USD",
+    "eventTimestamp": "2026-05-15T17:02:11Z",
+    "metadata": {
+      "source": "readme-outage"
+    }
+  }'
+
+curl -i "$GATEWAY/events/evt-readme-down"
+
+docker compose start account-service
 ```
 
 ## Final Acceptance Checklist
 
-- Both services run independently as separate FastAPI processes.
-- Docker Compose starts both services together.
-- Each service uses a separate SQLite database.
-- Gateway `POST /events` validates event payloads.
-- Gateway duplicate `eventId` submissions return the original event and do not
-  call Account Service again.
-- Gateway event listings are ordered chronologically by `eventTimestamp`.
-- Account Service computes balance as CREDIT minus DEBIT.
-- Account Service applies duplicate `eventId` transactions idempotently.
-- Gateway persists events only after Account Service accepts the transaction.
+- Docker Compose starts and stops both services.
+- Each service uses a separate SQLite database and Docker volume.
+- Gateway validates events and rejects malformed payloads.
+- Gateway stores events only after Account Service accepts the transaction.
+- Gateway duplicate `eventId` submissions are idempotent.
+- Gateway event listings are ordered by `eventTimestamp`.
+- Account Service computes balances as CREDIT minus DEBIT.
+- Account Service duplicate `eventId` transactions are idempotent.
 - Gateway returns `503 Service Unavailable` when Account Service is unreachable.
 - Gateway read endpoints continue working during Account Service outage.
 - Gateway propagates `X-Trace-Id` to Account Service.
 - Both services emit JSON request logs containing `traceId`.
 - Both services expose `/health`.
-- Both services expose custom metrics.
+- Both services expose `/metrics`.
 - Automated tests pass with `pytest`.
-
-## Implementation Defaults
-
-- **Language/framework**: Python + FastAPI
-- **Database**: separate SQLite database per service
-- **Service communication**: synchronous REST
-- **Trace header**: `X-Trace-Id`
-- **Resiliency pattern**: bounded timeout + retry with exponential backoff
-- **Metrics**: request counts and Account Service call metrics
