@@ -13,15 +13,53 @@ class RecordingAccountApplier:
     def __init__(self) -> None:
         self.events = []
         self.trace_ids = []
+        self.balance_requests = []
+        self.account_requests = []
 
     def apply_event(self, event, trace_id=None) -> None:
         self.events.append(event)
         self.trace_ids.append(trace_id)
 
+    def get_balance(self, account_id, trace_id=None):
+        self.balance_requests.append((account_id, trace_id))
+        return {
+            "accountId": account_id,
+            "balance": 150,
+            "currency": "USD",
+        }
+
+    def get_account(self, account_id, trace_id=None):
+        self.account_requests.append((account_id, trace_id))
+        return {
+            "accountId": account_id,
+            "currency": "USD",
+            "balance": 150,
+            "transactionCount": 1,
+            "recentTransactions": [
+                {
+                    "eventId": "evt-001",
+                    "accountId": account_id,
+                    "type": "CREDIT",
+                    "amount": 150,
+                    "currency": "USD",
+                    "eventTimestamp": "2026-05-15T14:02:11Z",
+                    "metadata": {
+                        "source": "test-suite",
+                    },
+                }
+            ],
+        }
+
 
 class FailingAccountApplier:
     def apply_event(self, event, trace_id=None) -> None:
         raise AccountApplicationError("Account Service is unavailable")
+
+    def get_balance(self, account_id, trace_id=None):
+        raise AccountApplicationError("Account Service is unreachable")
+
+    def get_account(self, account_id, trace_id=None):
+        raise AccountApplicationError("Account Service is unreachable")
 
 
 class ToggleAccountApplier:
@@ -31,6 +69,26 @@ class ToggleAccountApplier:
     def apply_event(self, event, trace_id=None) -> None:
         if not self.available:
             raise AccountApplicationError("Account Service is unavailable")
+
+    def get_balance(self, account_id, trace_id=None):
+        if not self.available:
+            raise AccountApplicationError("Account Service is unreachable")
+        return {
+            "accountId": account_id,
+            "balance": 150,
+            "currency": "USD",
+        }
+
+    def get_account(self, account_id, trace_id=None):
+        if not self.available:
+            raise AccountApplicationError("Account Service is unreachable")
+        return {
+            "accountId": account_id,
+            "currency": "USD",
+            "balance": 150,
+            "transactionCount": 1,
+            "recentTransactions": [],
+        }
 
 
 @pytest.fixture
@@ -221,6 +279,62 @@ def test_existing_event_reads_still_work_when_account_application_fails(gateway_
     assert [event["eventId"] for event in list_response.json()["events"]] == [
         "evt-001"
     ]
+
+
+def test_gateway_proxies_account_balance_with_trace_id(client, applier):
+    response = client.get(
+        "/accounts/acct-123/balance",
+        headers={"X-Trace-Id": "trace-balance-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Trace-Id"] == "trace-balance-123"
+    assert response.json() == {
+        "accountId": "acct-123",
+        "balance": 150,
+        "currency": "USD",
+    }
+    assert applier.balance_requests == [("acct-123", "trace-balance-123")]
+
+
+def test_gateway_proxies_account_details_with_trace_id(client, applier):
+    response = client.get(
+        "/accounts/acct-123",
+        headers={"X-Trace-Id": "trace-account-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Trace-Id"] == "trace-account-123"
+    assert response.json()["accountId"] == "acct-123"
+    assert response.json()["balance"] == 150
+    assert response.json()["transactionCount"] == 1
+    assert applier.account_requests == [("acct-123", "trace-account-123")]
+
+
+def test_gateway_balance_query_returns_clear_error_when_account_is_unreachable(
+    gateway_settings,
+):
+    client = TestClient(
+        create_app(gateway_settings, account_applier=FailingAccountApplier())
+    )
+
+    response = client.get("/accounts/acct-123/balance")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Account Service is unreachable"
+
+
+def test_gateway_account_query_returns_clear_error_when_account_is_unreachable(
+    gateway_settings,
+):
+    client = TestClient(
+        create_app(gateway_settings, account_applier=FailingAccountApplier())
+    )
+
+    response = client.get("/accounts/acct-123")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Account Service is unreachable"
 
 
 def test_gateway_generates_trace_id_when_request_has_none(client):

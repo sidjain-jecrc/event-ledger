@@ -12,6 +12,7 @@ def test_docker_compose_defines_both_services_and_separate_databases():
     assert "ACCOUNT_SERVICE_URL: http://account-service:8001" in compose
     assert "ACCOUNT_SERVICE_DATABASE_URL: sqlite:////data/account_service.db" in compose
     assert "EVENT_GATEWAY_DATABASE_URL: sqlite:////data/event_gateway.db" in compose
+    assert "8001:8001" not in compose
     assert "account-service-data:" in compose
     assert "event-gateway-data:" in compose
     assert "condition: service_healthy" in compose
@@ -30,5 +31,7 @@ def test_readme_documents_docker_compose_and_final_verification():
 
     assert "docker compose up --build" in readme
     assert "http://127.0.0.1:8000/health" in readme
-    assert "http://127.0.0.1:8001/health" in readme
+    assert "Account Service is internal" in readme
+    assert "docker compose exec account-service" in readme
+    assert '"Account Service is unreachable"' in readme
     assert "Final Acceptance Checklist" in readme

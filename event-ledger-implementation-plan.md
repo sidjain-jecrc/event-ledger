@@ -59,6 +59,11 @@ ambiguity in favor of the handout.
   verification commands, and a final acceptance checklist, delivery artifact
   tests cover the Compose/Docker/README contract, and final automated
   verification passed.
+- **Internal Account Service refinement complete**: Account Service remains the
+  owner of account state but is not published to external clients in Docker
+  Compose. Gateway now exposes account balance/detail reads, proxies them to
+  Account Service with `X-Trace-Id`, and returns a clear `503` with
+  `"Account Service is unreachable"` when the internal service is down.
 
 ## Architecture Summary
 
@@ -66,9 +71,11 @@ The system has two independently runnable services:
 
 - **Event Gateway API**: public-facing service that receives transaction events,
   validates input, enforces event idempotency, stores event records locally, and
-  calls the Account Service over synchronous REST.
+  calls the Account Service over synchronous REST. It is also the external
+  entry point for account balance and account detail queries.
 - **Account Service**: internal service that owns account state, balances, and
-  transaction history.
+  transaction history. It is called only by Gateway and must not be exposed
+  directly to external clients.
 
 Each service must use its own embedded or in-memory database. The services must
 not share a database, in-process state, or direct storage access. The service
@@ -91,6 +98,8 @@ boundary is the REST API contract between the Gateway and Account Service.
    - Return the original accepted event for duplicate submissions.
    - List account events ordered by `eventTimestamp`, not arrival time.
    - Call the Account Service to apply each new transaction.
+   - Proxy account balance and account detail reads to Account Service so
+     external clients never call the internal service directly.
 
 3. **Keep event persistence aligned with account application**
    - Persist Gateway event records only after successful Account Service
@@ -135,10 +144,21 @@ boundary is the REST API contract between the Gateway and Account Service.
   - List events for an account from Gateway local storage.
   - Results must be ordered by `eventTimestamp`.
 
+- `GET /accounts/{accountId}/balance`
+  - Public account balance query routed by Gateway to Account Service.
+  - Return a clear `503 Service Unavailable` if Account Service is unreachable.
+
+- `GET /accounts/{accountId}`
+  - Public account details query routed by Gateway to Account Service.
+  - Return a clear `503 Service Unavailable` if Account Service is unreachable.
+
 - `GET /health`
   - Return Gateway service status and basic diagnostics.
 
 ### Account Service
+
+Account Service is an internal API. It is reachable by Gateway over the service
+network, but it should not be published directly to external clients.
 
 - `POST /accounts/{accountId}/transactions`
   - Apply a transaction to an account.
@@ -173,9 +193,8 @@ boundary is the REST API contract between the Gateway and Account Service.
   `503 Service Unavailable` instead of hanging or returning an unhandled `500`.
 - Gateway event read endpoints continue working from Gateway local data when
   Account Service is unavailable.
-- Balance/account queries should clearly report Account Service unreachability
-  when routed through Gateway, or be documented as internal-only if exposed
-  directly by Account Service.
+- Gateway balance/account query endpoints clearly report Account Service
+  unreachability when the internal service is down.
 
 ## Test Plan
 
@@ -208,6 +227,8 @@ The implementation is complete when:
 - Both services can run together via Docker Compose or clearly documented local
   commands.
 - Both services use separate embedded or in-memory databases.
+- Docker Compose publishes only Gateway to the host. Account Service remains
+  internal to the Compose network.
 - Gateway event submission validates payloads and applies transactions through
   Account Service.
 - Duplicate events are idempotent and do not mutate balances twice.
@@ -218,6 +239,8 @@ The implementation is complete when:
 - Health endpoints exist on both services.
 - At least one custom metric is exposed or logged.
 - Gateway handles Account Service unavailability with clear `503` behavior.
+- Gateway account balance/details queries report Account Service
+  unreachability clearly when Account Service is down.
 - Required automated tests pass with the documented command.
 - `README.md` explains architecture, setup, startup, tests, and resiliency
   choice.
@@ -243,7 +266,8 @@ The implementation is complete when:
   `409 Conflict` so balances are not computed across currencies.
 - Event Gateway uses the real Gateway-to-Account REST client by default; tests
   can still inject fake account appliers for focused behavior checks.
-- Docker Compose is the preferred run path and maps Gateway to port `8000` and
-  Account Service to port `8001`.
+- Docker Compose is the preferred run path. It maps Gateway to host port `8000`
+  and keeps Account Service un-published on host port `8001`; Gateway reaches it
+  internally as `http://account-service:8001`.
 - This repository starts with `event-ledger-candidate-handout.md`; this document
   is the implementation planning companion.

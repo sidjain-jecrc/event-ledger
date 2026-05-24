@@ -7,14 +7,16 @@ events. The source requirements live in `event-ledger-candidate-handout.md`.
 
 - **Event Gateway API** is the public-facing service. It validates submitted
   events, enforces idempotency by `eventId`, stores accepted event records in
-  its own SQLite database, and calls Account Service over synchronous REST.
-- **Account Service** is the internal account-state service. It stores
-  transactions in its own SQLite database, applies idempotency by `eventId`, and
-  computes account balances as CREDIT minus DEBIT.
+  its own SQLite database, proxies account read queries, and calls Account
+  Service over synchronous REST.
+- **Account Service** is internal. It manages account state, balances,
+  transaction history, and account-level queries. It is only called by Gateway
+  and is not exposed to external clients.
 
 The services run as independent processes. They do not share a database or
-in-process state. Docker Compose starts both services and wires Gateway to
-Account Service through `http://account-service:8001`.
+in-process state. Docker Compose publishes only Gateway on the host and wires
+Gateway to Account Service through the internal Docker DNS name
+`http://account-service:8001`.
 
 ## Prerequisites
 
@@ -33,13 +35,14 @@ docker compose up --build
 Service URLs:
 
 - Event Gateway API: `http://127.0.0.1:8000`
-- Account Service: `http://127.0.0.1:8001`
+- Account Service: internal only at `http://account-service:8001` from the
+  Compose network. It does not publish a host port.
 
 Quick smoke check:
 
 ```bash
 curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8001/health
+docker compose exec account-service python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8001/health').read().decode())"
 ```
 
 Stop services and keep Docker volumes:
@@ -93,7 +96,6 @@ Set shell variables used by the examples:
 
 ```bash
 GATEWAY=http://127.0.0.1:8000
-ACCOUNT=http://127.0.0.1:8001
 TRACE=readme-trace-001
 ```
 
@@ -103,12 +105,13 @@ Expected behavior:
 
 - Gateway `/health` returns service status, database diagnostics, and Account
   Service URL.
-- Account Service `/health` returns service status and database diagnostics.
+- Account Service `/health` returns service status and database diagnostics
+  from inside the Compose network.
 - Gateway returns the same `X-Trace-Id` when one is provided.
 
 ```bash
 curl -i -H "X-Trace-Id: $TRACE" "$GATEWAY/health"
-curl -i -H "X-Trace-Id: $TRACE" "$ACCOUNT/health"
+docker compose exec account-service python -c "import urllib.request; req=urllib.request.Request('http://127.0.0.1:8001/health', headers={'X-Trace-Id':'readme-trace-001'}); print(urllib.request.urlopen(req).read().decode())"
 ```
 
 ### 2. Submit An Event Through Gateway
@@ -239,102 +242,65 @@ curl -i -X POST "$GATEWAY/events" \
   }'
 ```
 
-### 7. Account Balance
+### 7. Account Balance Through Gateway
 
 Expected behavior:
 
+- External clients query balance through Gateway.
 - Balance is CREDIT minus DEBIT.
 - For the `acct-readme` events above, expected balance is `135`.
+- If Account Service is unreachable, Gateway returns a clear `503` response.
 
 ```bash
-curl -i "$ACCOUNT/accounts/acct-readme/balance"
+curl -i -H "X-Trace-Id: $TRACE" "$GATEWAY/accounts/acct-readme/balance"
 ```
 
-### 8. Account Details
+### 8. Account Details Through Gateway
 
 Expected behavior:
 
+- External clients query account details through Gateway.
 - Account details include account ID, currency, current balance, transaction
   count, and recent transactions.
 - Recent transactions are returned newest first.
+- If Account Service is unreachable, Gateway returns a clear `503` response.
 
 ```bash
-curl -i "$ACCOUNT/accounts/acct-readme"
+curl -i -H "X-Trace-Id: $TRACE" "$GATEWAY/accounts/acct-readme"
 ```
 
-### 9. Account Service Direct Transaction And Idempotency
+### 9. Account Service Internal Contract
 
 Expected behavior:
 
-- Account Service accepts direct internal transaction application.
-- New transaction returns `201 Created`.
-- Duplicate `eventId` returns `200 OK` with `idempotent: true`.
-- Duplicate transaction does not change balance twice.
+- Account Service is intentionally not published to the host.
+- Gateway is the only external entry point for transaction application and
+  account reads.
+- Automated tests cover Account Service transaction application, idempotency,
+  balance calculation, account details, validation, logs, health, and metrics.
 
 ```bash
-curl -i -X POST "$ACCOUNT/accounts/acct-direct/transactions" \
-  -H "Content-Type: application/json" \
-  -H "X-Trace-Id: $TRACE" \
-  -d '{
-    "eventId": "evt-direct-001",
-    "type": "CREDIT",
-    "amount": 50.00,
-    "currency": "USD",
-    "eventTimestamp": "2026-05-15T14:02:11Z",
-    "metadata": {
-      "source": "readme-direct"
-    }
-  }'
-
-curl -i -X POST "$ACCOUNT/accounts/acct-direct/transactions" \
-  -H "Content-Type: application/json" \
-  -H "X-Trace-Id: $TRACE" \
-  -d '{
-    "eventId": "evt-direct-001",
-    "type": "CREDIT",
-    "amount": 50.00,
-    "currency": "USD",
-    "eventTimestamp": "2026-05-15T14:02:11Z",
-    "metadata": {
-      "source": "readme-direct"
-    }
-  }'
-
-curl -i "$ACCOUNT/accounts/acct-direct/balance"
+docker compose ps
 ```
 
-### 10. Account Service Validation
+The output should show a host port mapping for `event-gateway` only. Account
+Service should not list a published `0.0.0.0:8001` or `127.0.0.1:8001` port.
 
-Expected behavior:
-
-- Invalid internal transaction payloads return a meaningful `4xx` response.
-
-```bash
-curl -i -X POST "$ACCOUNT/accounts/acct-direct/transactions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "eventId": "evt-direct-invalid",
-    "type": "TRANSFER",
-    "amount": 0,
-    "currency": "USD",
-    "eventTimestamp": "2026-05-15T14:02:11Z"
-  }'
-```
-
-### 11. Metrics
+### 10. Metrics
 
 Expected behavior:
 
 - Gateway `/metrics` includes request counts, Account Service call outcomes,
   and Account Service call latency aggregates.
-- Account Service `/metrics` includes request counts.
+- Account Service `/metrics` includes request counts and is available from
+  inside the Compose network.
 
 ```bash
 curl -i "$GATEWAY/metrics"
-curl -i "$ACCOUNT/metrics"
+docker compose exec account-service python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8001/metrics').read().decode())"
 ```
 
-### 12. Trace Propagation
+### 11. Trace Propagation
 
 Expected behavior:
 
@@ -346,12 +312,14 @@ Expected behavior:
 docker compose logs event-gateway account-service | grep "$TRACE"
 ```
 
-### 13. Graceful Degradation
+### 12. Graceful Degradation
 
 Expected behavior:
 
 - When Account Service is stopped, Gateway `POST /events` returns
   `503 Service Unavailable`.
+- Gateway account balance/details queries return `503` with
+  `"Account Service is unreachable"`.
 - Gateway read endpoints still work because they use Gateway local storage.
 - Failed new events are not stored.
 
@@ -360,6 +328,7 @@ docker compose stop account-service
 
 curl -i "$GATEWAY/events/evt-readme-001"
 curl -i "$GATEWAY/events?account=acct-readme"
+curl -i "$GATEWAY/accounts/acct-readme/balance"
 
 curl -i -X POST "$GATEWAY/events" \
   -H "Content-Type: application/json" \
@@ -384,6 +353,7 @@ docker compose start account-service
 
 - Docker Compose starts and stops both services.
 - Each service uses a separate SQLite database and Docker volume.
+- Account Service is internal and is not published to the host.
 - Gateway validates events and rejects malformed payloads.
 - Gateway stores events only after Account Service accepts the transaction.
 - Gateway duplicate `eventId` submissions are idempotent.
@@ -391,6 +361,8 @@ docker compose start account-service
 - Account Service computes balances as CREDIT minus DEBIT.
 - Account Service duplicate `eventId` transactions are idempotent.
 - Gateway returns `503 Service Unavailable` when Account Service is unreachable.
+- Gateway account balance/details queries report Account Service
+  unreachability clearly when Account Service is down.
 - Gateway read endpoints continue working during Account Service outage.
 - Gateway propagates `X-Trace-Id` to Account Service.
 - Both services emit JSON request logs containing `traceId`.

@@ -26,10 +26,48 @@ class AccountApplier(Protocol):
     def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
         pass
 
+    def get_balance(
+        self,
+        account_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, object]:
+        pass
+
+    def get_account(
+        self,
+        account_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, object]:
+        pass
+
 
 class NoopAccountApplier:
     def apply_event(self, event: EventRequest, trace_id: str | None = None) -> None:
         return None
+
+    def get_balance(
+        self,
+        account_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "accountId": account_id,
+            "balance": 0,
+            "currency": "USD",
+        }
+
+    def get_account(
+        self,
+        account_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "accountId": account_id,
+            "currency": "USD",
+            "balance": 0,
+            "transactionCount": 0,
+            "recentTransactions": [],
+        }
 
 
 def decimal_to_json_number(value: Decimal) -> int | float:
@@ -75,15 +113,67 @@ class HttpAccountApplier:
         payload = account_transaction_payload(event)
         headers = {"X-Trace-Id": trace_id} if trace_id else None
 
+        response = self._request_with_retries(
+            method="POST",
+            url=url,
+            headers=headers,
+            json=payload,
+            unavailable_message="Account Service is unavailable",
+        )
+        if 200 <= response.status_code < 300:
+            return
+
+    def get_balance(
+        self,
+        account_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, object]:
+        quoted_account_id = quote(account_id, safe="")
+        url = f"{self.base_url}/accounts/{quoted_account_id}/balance"
+        headers = {"X-Trace-Id": trace_id} if trace_id else None
+        response = self._request_with_retries(
+            method="GET",
+            url=url,
+            headers=headers,
+            unavailable_message="Account Service is unreachable",
+        )
+        return response.json()
+
+    def get_account(
+        self,
+        account_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, object]:
+        quoted_account_id = quote(account_id, safe="")
+        url = f"{self.base_url}/accounts/{quoted_account_id}"
+        headers = {"X-Trace-Id": trace_id} if trace_id else None
+        response = self._request_with_retries(
+            method="GET",
+            url=url,
+            headers=headers,
+            unavailable_message="Account Service is unreachable",
+        )
+        return response.json()
+
+    def _request_with_retries(
+        self,
+        *,
+        method: str,
+        url: str,
+        unavailable_message: str,
+        headers: dict[str, str] | None = None,
+        json: dict[str, object] | None = None,
+    ) -> httpx.Response:
         last_error: httpx.RequestError | None = None
         last_response: httpx.Response | None = None
 
         for attempt in range(1, self.retry_attempts + 1):
+            start = time.perf_counter()
             try:
-                start = time.perf_counter()
-                response = self.client.post(
+                response = self.client.request(
+                    method,
                     url,
-                    json=payload,
+                    json=json,
                     headers=headers,
                     timeout=self.timeout_seconds,
                 )
@@ -97,7 +187,7 @@ class HttpAccountApplier:
                     self._sleep_before_retry(attempt)
                     continue
                 raise AccountApplicationError(
-                    "Account Service is unavailable",
+                    unavailable_message,
                     status_code=503,
                 ) from exc
 
@@ -105,9 +195,8 @@ class HttpAccountApplier:
                 outcome=str(response.status_code),
                 start=start,
             )
-
             if 200 <= response.status_code < 300:
-                return
+                return response
 
             if not _should_retry_response(response):
                 raise AccountApplicationError(
@@ -122,12 +211,12 @@ class HttpAccountApplier:
 
         if last_response is not None:
             raise AccountApplicationError(
-                "Account Service is unavailable",
+                unavailable_message,
                 status_code=503,
             )
 
         raise AccountApplicationError(
-            "Account Service is unavailable",
+            unavailable_message,
             status_code=503,
         ) from last_error
 

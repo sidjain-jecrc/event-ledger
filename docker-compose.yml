@@ -11,8 +11,6 @@ services:
       - "8001"
     environment:
       ACCOUNT_SERVICE_DATABASE_URL: sqlite:////data/account_service.db
-    ports:
-      - "8001:8001"
     volumes:
       - account-service-data:/data
     healthcheck:

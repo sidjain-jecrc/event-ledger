@@ -146,6 +146,26 @@ def create_app(
             )
         return event
 
+    @app.get("/accounts/{accountId}/balance")
+    def get_account_balance(accountId: str, request: Request) -> dict[str, object]:
+        try:
+            return account_applier.get_balance(accountId, request.state.trace_id)
+        except AccountApplicationError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=str(exc),
+            ) from exc
+
+    @app.get("/accounts/{accountId}")
+    def get_account(accountId: str, request: Request) -> dict[str, object]:
+        try:
+            return account_applier.get_account(accountId, request.state.trace_id)
+        except AccountApplicationError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=str(exc),
+            ) from exc
+
     return app
 
 

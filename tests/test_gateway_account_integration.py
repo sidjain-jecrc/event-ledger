@@ -89,8 +89,14 @@ def test_gateway_submit_event_applies_transaction_to_account_service(tmp_path):
                 "/events",
                 json=event_payload(event_type="DEBIT", amount=999.00),
             )
-            balance_response = account_client.get("/accounts/acct-123/balance")
-            account_response = account_client.get("/accounts/acct-123")
+            balance_response = gateway_client.get(
+                "/accounts/acct-123/balance",
+                headers={"X-Trace-Id": "trace-balance-123"},
+            )
+            account_response = gateway_client.get(
+                "/accounts/acct-123",
+                headers={"X-Trace-Id": "trace-account-123"},
+            )
 
     assert first_response.status_code == 201
     assert first_response.headers["X-Trace-Id"] == "trace-integration-123"
@@ -104,4 +110,8 @@ def test_gateway_submit_event_applies_transaction_to_account_service(tmp_path):
     }
     assert account_response.status_code == 200
     assert account_response.json()["transactionCount"] == 1
-    assert observed_trace_ids == ["trace-integration-123"]
+    assert observed_trace_ids == [
+        "trace-integration-123",
+        "trace-balance-123",
+        "trace-account-123",
+    ]

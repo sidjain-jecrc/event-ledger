@@ -62,6 +62,69 @@ def test_http_account_applier_posts_gateway_event_to_account_service_contract():
     )
 
 
+def test_http_account_applier_gets_balance_from_account_service_with_trace_id():
+    observed = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["method"] = request.method
+        observed["path"] = request.url.path
+        observed["trace_id"] = request.headers.get("X-Trace-Id")
+        return httpx.Response(
+            200,
+            json={
+                "accountId": "acct-123",
+                "balance": 150,
+                "currency": "USD",
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    applier = HttpAccountApplier(gateway_settings(), client=client)
+
+    response = applier.get_balance("acct-123", trace_id="trace-balance-123")
+
+    assert observed["method"] == "GET"
+    assert observed["path"] == "/accounts/acct-123/balance"
+    assert observed["trace_id"] == "trace-balance-123"
+    assert response == {
+        "accountId": "acct-123",
+        "balance": 150,
+        "currency": "USD",
+    }
+
+
+def test_http_account_applier_gets_account_details_from_account_service_with_trace_id():
+    observed = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["method"] = request.method
+        observed["path"] = request.url.path
+        observed["trace_id"] = request.headers.get("X-Trace-Id")
+        return httpx.Response(
+            200,
+            json={
+                "accountId": "acct-123",
+                "currency": "USD",
+                "balance": 150,
+                "transactionCount": 1,
+                "recentTransactions": [],
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    applier = HttpAccountApplier(gateway_settings(), client=client)
+
+    response = applier.get_account("acct-123", trace_id="trace-account-123")
+
+    assert observed["method"] == "GET"
+    assert observed["path"] == "/accounts/acct-123"
+    assert observed["trace_id"] == "trace-account-123"
+    assert response["accountId"] == "acct-123"
+    assert response["transactionCount"] == 1
+
+
 def test_http_account_applier_retries_request_errors_before_returning_503():
     attempts = 0
 
@@ -82,6 +145,23 @@ def test_http_account_applier_retries_request_errors_before_returning_503():
     assert attempts == 3
     assert exc_info.value.status_code == 503
     assert str(exc_info.value) == "Account Service is unavailable"
+
+
+def test_http_account_applier_balance_request_error_returns_unreachable_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    applier = HttpAccountApplier(
+        gateway_settings(retry_attempts=1),
+        client=client,
+    )
+
+    with pytest.raises(AccountApplicationError) as exc_info:
+        applier.get_balance("acct-123")
+
+    assert exc_info.value.status_code == 503
+    assert str(exc_info.value) == "Account Service is unreachable"
 
 
 def test_http_account_applier_uses_exponential_backoff_between_retries():
@@ -212,4 +292,27 @@ def test_http_account_applier_preserves_account_service_error_status_and_detail(
 
     assert exc_info.value.status_code == 409
     assert str(exc_info.value) == "Account acct-123 already uses USD"
+    assert attempts == 1
+
+
+def test_http_account_applier_preserves_account_query_error_status_and_detail():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(
+            404,
+            json={"detail": "Account acct-123 was not found"},
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    applier = HttpAccountApplier(gateway_settings(), client=client)
+
+    with pytest.raises(AccountApplicationError) as exc_info:
+        applier.get_account("acct-123")
+
+    assert exc_info.value.status_code == 404
+    assert str(exc_info.value) == "Account acct-123 was not found"
     assert attempts == 1
