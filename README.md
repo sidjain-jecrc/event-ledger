@@ -50,7 +50,17 @@ Phase 7 is delivery and final acceptance:
 - Docker Compose uses separate SQLite database files and separate named volumes
 - Final acceptance verification is documented below
 
+## Prerequisites
+
+- Python 3.11 or newer.
+- `pip` for installing Python dependencies.
+- Docker Desktop or another Docker Compose compatible runtime, if using the
+  preferred Docker Compose startup path.
+- `curl` for the manual verification commands.
+
 ## Local Setup
+
+Install dependencies in a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -210,6 +220,16 @@ Returns in-memory Gateway metrics:
 - Account Service call latency count, total, average, and max in milliseconds
 
 ## Resiliency Configuration
+
+The selected resiliency pattern is **timeout + retry with exponential backoff**
+on the Gateway's synchronous REST call to Account Service.
+
+This pattern was chosen because it directly addresses transient network
+failures, short Account Service restarts, and slow responses without letting
+Gateway requests hang indefinitely. Retries are safe for this system because
+both services use `eventId` as an idempotency key, so a retried transaction
+cannot be applied twice. If all attempts fail, Gateway returns
+`503 Service Unavailable` and does not store the event as accepted.
 
 The Gateway Account Service client is configured with environment variables:
 
